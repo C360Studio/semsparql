@@ -15,37 +15,50 @@ ADR-107 keeps semantic-web vocabulary and RDF runtime out of SemEngine core, at 
 that edge. It never writes the graph. It reads through `reader.GraphReader`, maps IDs and serializes RDF through
 `semengine/vocabulary/export`, and resolves vocabulary through SemEngine's `vocabulary` and SemVocab packs.
 
-The plan is issue #1 (bootstrap, Stage 3): layout, design decisions, proving tests and tasks. Its task 0.1
-(`go.mod`, Go gates) waits on semengine#235 and semvocab#1 being merged and tagged; tasks 3.3 and 4.1 wait on
-semengine#256 and semengine#259. **No Go code exists in the tree yet**; do not describe planned code as present.
+The plan is issue #1 (bootstrap, Stage 3): layout, design decisions, proving tests and tasks. Task 0.1 (`go.mod`
+pinning `semengine v0.1.0-alpha.2` and `semvocab v0.1.0`, Go verification gates, and `internal/harness/contract`
+structural guards) and task 0.2 (`semengine#256` and `semengine#259`, both merged into `v0.1.0-alpha.2`) are in place.
+**No product runtime packages (`irimap`, `reader`, `sparql`, `server`, `cmd/semsparql`) exist in the tree yet**; do not
+describe planned runtime packages as present.
 
 ## Commands
 
 `task --list` shows every command with its rationale.
 
 ```bash
-task doctor       # tool versions against their pins; starts no workloads
-task spec:check   # strict OpenSpec validation; fails on a Hold: outside every task
-task spec:queue   # in-flight OpenSpec changes and their holds
-task docs:check   # markdownlint
-task merge:check  # -- <n>: fail on open flakes PR n leaves open, missing up-to-date rule, or missing review lines
-task verify       # spec:check docs:check; fails if tracked files changed
+task doctor              # tool versions and Docker reachability against pins; starts no workloads
+task fmt                 # format Go sources (changes files)
+task fmt:check           # fail if any Go source needs formatting
+task tidy:check          # fail if go.mod or go.sum is not tidy
+task cleanup-roots:check # fail if a test stops, closes, or terminates under context.Background/TODO
+task build               # build all packages
+task vet                 # run go vet
+task lint                # pinned revive + fixed-port guard and fixture test
+task vuln                # pinned govulncheck over all packages
+task test:unit           # unit tests once with -race at one CPU
+task test:repeat         # unit tests five times at one CPU without -race, shuffled
+task test:integration    # Docker-backed tests (-tags=integration), recording coverage/integration.tree
+task cover:check         # 80% statement coverage check over configured targets and tree fingerprint
+task spec:check          # strict OpenSpec validation; fails on a Hold: outside every task
+task spec:queue          # in-flight OpenSpec changes and their holds
+task docs:check          # markdownlint
+task merge:check         # -- <n>: fail on open flakes PR n leaves open, missing up-to-date rule, or missing review lines
+task verify              # every gate cheapest first (test:repeat last); fails if tracked files changed
 ```
 
-The Go gates (`fmt`, `fmt:check`, `tidy:check`, `build`, `vet`, `lint`, `vuln`, `test:unit`, `test:repeat`,
-`test:integration`, `cover:check`) join `task verify` with task 0.1. Run `task verify` before every implementation
-push. CI has three jobs: `verify` runs the same commands; `merge-check` runs `scripts/merge-check.sh` (known flakes,
-up-to-date rule, cross-agent review lines); `required` fails if either failed, is missing, or was skipped/cancelled.
-Gate selection per diff: `.agents/skills/semsparql-preflight/SKILL.md`.
+Run `task verify` before every implementation push. CI has three jobs: `verify` runs `task doctor` and `task verify`;
+`merge-check` runs `scripts/merge-check.sh` (known flakes, up-to-date rule, cross-agent review lines); `required` fails
+if either failed, is missing, or was skipped/cancelled. Gate selection per diff:
+`.agents/skills/semsparql-preflight/SKILL.md`.
 
 ## Rules and what enforces them
 
 Domain-grouped working reference. `.agents/rules-index.md` carries the full audit matrix (canonical home, then what
 enforces it, including review-only gaps). Short names in "Where": `arch`, `dev`, `rev`, `writer` ->
 `.agents/contracts/semsparql-<role>.md`; `protocol` -> `.agents/protocol.md`; `testing` -> `docs/testing.md`. In
-"Gate": `review` means review only (no command fails when broken); `verify` means enforced by `task verify`. Most rows
-are `review` until task 0.1 brings Go and its structural guards; a change that can turn a row into a failing command
-should. A new repo-wide or agent-conduct rule updates both this file and `.agents/rules-index.md`.
+"Gate": `review` means review only (no command fails when broken); `verify` means enforced by `task verify`. Runtime
+rows remain `review` until their implementation task lands; a change that can turn a row into a failing command should.
+A new repo-wide or agent-conduct rule updates both this file and `.agents/rules-index.md`.
 
 ### 1. Read-only boundary and upstream
 
@@ -55,7 +68,7 @@ should. A new repo-wide or agent-conduct rule updates both this file and `.agent
 | `review` | Read only through `reader.GraphReader` over verbs declared in `graph.QueryVerbs()`; never spell a `graph.ingest.query.*` subject as a literal | `dev`, `rev`; `query-pattern` skill |
 | `review` | IRI mapping and RDF graph output come from `semengine/vocabulary/export`; no second IRI mapping and no RDF graph writers here | `dev`, `rev`, `arch`; issue #1 §1, §2.2.1 |
 | `review` | A KV watch reader, if built, declares a memory ceiling (refusing to start above it) and freshness, and is a stopgap for graph-index, never a competing index | `dev`, `rev`, `arch`; issue #1 §2.1 |
-| `review` | SemEngine and SemVocab are pinned to released tags: no `replace`, fork, local copy, or pseudo-version | `protocol` § Upstream boundary; `rev` |
+| `verify+review` | SemEngine and SemVocab are pinned to released tags: no `replace`, fork, local copy, or pseudo-version | `protocol` § Upstream boundary; `rev`; `task tidy:check`; `TestPinnedDependencies` |
 | `review` | An upstream gap is filed on the upstream repository and the dependent task carries `Hold:` naming it; never worked around here | `protocol` § Upstream boundary; `arch` |
 | `review` | Agents mutate only this repository; sister repositories are read-only | `protocol` |
 
@@ -85,10 +98,10 @@ should. A new repo-wide or agent-conduct rule updates both this file and `.agent
 
 | Gate | Rule | Where |
 | --- | --- | --- |
-| `review` | No `time.Sleep` in a test file | `dev`, `rev`; `testing` |
-| `review` | Tests bind no fixed address or port | `dev`, `rev`; `testing` |
-| `review` | No test calls `Skip`/`Skipf`/`SkipNow`; no test file carries a build tag other than `integration` | `dev`, `rev`; `testing` |
-| `review` | Test cleanup never stops, closes, or terminates under an unbounded context | `dev`, `rev`; `testing` |
+| `verify` | No `time.Sleep` in a test file | `dev`, `rev`; `testing`; `TestNoSleepsInTests` |
+| `verify+review` | Tests bind no fixed address or port | `dev`, `rev`; `testing`; `task lint` (`scripts/lint-test-ports.sh`) |
+| `verify+review` | No test calls `Skip`/`Skipf`/`SkipNow`; no test file carries a build tag other than `integration` | `dev`, `rev`; `testing`; `TestNoSkippedTests`, `TestNoHiddenTests` |
+| `verify+review` | Test cleanup never stops, closes, or terminates under an unbounded context | `dev`, `rev`; `testing`; `task cleanup-roots:check` (`scripts/cleanup-roots-check.sh`) |
 | `review` | Tests use an independent oracle and are shown able to fail | `dev`, `rev`; `testing` |
 | `review` | Every surface that parses external bytes or strings (SPARQL text, IRIs, entity IDs, HTTP parameters) ships a `Fuzz*` target with a seed corpus of accepted and rejected classes | `dev`, `rev`; `testing` |
 | `review` | Changes with interacting inputs, a stated law, or order-dependent history record whether generated checks are used; Rapid runs record seed and checks completed; histories check against a reference model | `dev`, `rev`; `testing` |
@@ -122,8 +135,8 @@ should. A new repo-wide or agent-conduct rule updates both this file and `.agent
 | `review` | A new rule names what enforces it and adds its row to `AGENTS.md` and `.agents/rules-index.md` | `rev` |
 | `review` | Before claiming work, mutating state, or spawning role subagents on an underspecified prompt, confirm Deliverable, Scope/non-goals, Definition of Done/verification, and Stop boundary | `protocol`; `.agents/README.md` |
 | `review` | Role-agent briefs carry the owner's intent and the artifact itself, not a paraphrase; resume for continuity, start fresh for mechanics | `.agents/README.md` |
-| `review` | Architect, developer, and reviewer run on the frontier model tier; technical writer on a lighter tier (table in `.agents/README.md`) | `.agents/README.md` |
-| `review` | `AGENTS.md` stays under 24,000 bytes and matches `.agents/rules-index.md` in domains and rows; adapters stay thin and point to their canonical contract | `.agents/README.md` |
+| `verify+review` | Architect, developer, and reviewer run on the frontier model tier; technical writer on a lighter tier (table in `.agents/README.md`) | `.agents/README.md`; `TestAgentSetupParity` |
+| `verify+review` | `AGENTS.md` stays under 24,000 bytes and matches `.agents/rules-index.md` in domains and rows; adapters stay thin and point to their canonical contract | `.agents/README.md`; `TestAgentSetupParity` |
 | `review` | Pushed claim branches update by merging `origin/main`, never by rebase or force-push | `protocol` |
 | `review` | Evidence cited in a PR or task can be opened on another machine; git-ignored paths are named as local only | `semsparql-handoff`, `semsparql-preflight` skills |
 | `review` | Docs are written for a working developer: coined terms defined at first use, no jargon, no marketing | `writer`, `rev` |

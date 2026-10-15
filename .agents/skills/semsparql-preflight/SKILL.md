@@ -25,30 +25,35 @@ with current CI.
 
 | Task | What it does |
 | --- | --- |
-| `task doctor` | Reports tool versions against their pins; starts no workloads |
+| `task doctor` | Reports tool versions and Docker reachability against their pins; starts no workloads |
+| `task fmt` / `task fmt:check` | Formats Go sources / fails if any Go source needs formatting |
+| `task tidy:check` | Fails if `go.mod` or `go.sum` is not tidy |
+| `task cleanup-roots:check` | Fails if any `*_test.go` passes `context.Background()` or `context.TODO()` to `Stop`/`Close`/`Terminate` |
+| `task build` / `task vet` | Builds all packages / runs `go vet` |
+| `task lint` | Runs pinned `revive` plus `scripts/lint-test-ports.sh` and its fixture test |
+| `task vuln` | Runs pinned `govulncheck` over all packages |
+| `task test:unit` | Runs unit tests once with `-race` at one CPU |
+| `task test:repeat` | Runs unit tests five times at one CPU without `-race`, shuffled (`-- <pkgs>` to focus) |
+| `task test:integration` | Runs `-tags=integration` tests, writing `coverage/integration.coverprofile` and `coverage/integration.tree` (`-- <pkgs>` to focus) |
+| `task cover:check` | Enforces 80% statement coverage on configured targets in `scripts/cover-check.sh` and checks `coverage/integration.tree` |
 | `task spec:check` | Validates all OpenSpec changes and specs strictly, and fails on a `Hold:` written outside every task |
 | `task spec:queue` | Shows each in-flight OpenSpec change with its holds and blocking conditions |
 | `task docs:check` | Lints Markdown with `markdownlint-cli2` |
 | `task merge:check -- <n>` | Fails while an open `class:flake` issue is not closed by PR `n`, or while the rules on `main` do not require an up-to-date head, or while PR `n` is a code pull request, not a draft, whose `implemented-by:` and `reviewed-by:` lines do not name the implementing and reviewing agents; reads GitHub |
-| `task verify` | The checks above except `doctor`, `spec:queue` and `merge:check`, cheapest first; prints each step's time; fails on tracked-file change |
+| `task verify` | The checks above except `doctor`, `fmt`, `spec:queue` and `merge:check`, cheapest first (`test:repeat` last); prints each step's time; fails on tracked-file change |
 
-The Go gates (`fmt`, `fmt:check`, `tidy:check`, `build`, `vet`, `lint`, `vuln`, `test:unit`, `test:repeat`,
-`test:integration`, `cover:check`) join `task verify` with task 0.1 of issue #1, when `go.mod` lands. Until a task
-exists, there is no such gate to claim: a missing gate is not a passing one.
-
-CI has three jobs: `verify` runs `task verify`; `merge-check` runs `scripts/merge-check.sh` for the pull request (on a
-push to `main`, only its up-to-date half); `required` fails if `verify` or `merge-check` failed, is missing, or was
-skipped or cancelled.
+CI has three jobs: `verify` runs `task doctor` and `task verify`; `merge-check` runs `scripts/merge-check.sh` for the
+pull request (on a push to `main`, only its up-to-date half); `required` fails if `verify` or `merge-check` failed, is
+missing, or was skipped or cancelled.
 
 Select by what the diff changes:
 
-- **Documentation, skill or contract instructions only:** `task docs:check` and `git diff --check`; add
-  `task spec:check` when `openspec/` changed.
+- **Documentation, skill or contract instructions only:** `task docs:check`, `task test:unit` (for
+  `TestAgentSetupParity`), and `git diff --check`; add `task spec:check` when `openspec/` changed.
 - **An OpenSpec change:** `task spec:check`, then read `task spec:queue` in this worktree.
-- **Go behavior (once Go gates exist):** `task test:unit`, `task vet`, `task lint`, `task build`; focused tests first
-  during iteration.
-- **Docker-backed behavior (any `*_integration_test.go`, once it exists):** `task test:integration -- <pkgs>` to
-  focus, then `task cover:check`.
+- **Go behavior:** `task test:unit`, `task vet`, `task lint`, `task build`; focused tests first during iteration.
+- **Docker-backed behavior (any `*_integration_test.go`):** `task test:integration -- <pkgs>` to focus, then
+  `task cover:check`.
 - **Dependencies or `go.mod`:** `task tidy:check` and `task vuln` in addition to the Go gates.
 - **Before any implementation push:** `task verify`.
 - **Immediately before merging:** `task merge:check -- <n>`, in a shell where `GITHUB_ACTIONS` is not set. It sees a

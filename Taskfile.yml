@@ -1,10 +1,9 @@
 version: '3'
 
 # One entrypoint for local verification and CI; both run these same commands.
-# Tool pins live in one place each: Node in .nvmrc, Task in .task-version,
-# OpenSpec and markdownlint in package.json. Go (go.mod) and its gates (fmt,
-# tidy, build, vet, lint, vuln, test:*, cover:check) join with task 0.1 of
-# issue #1.
+# Tool pins live in one place each: Go in go.mod, Node in .nvmrc, Task in
+# .task-version, OpenSpec and markdownlint in package.json, revive and
+# govulncheck in go.mod tool directives.
 
 tasks:
   default:
@@ -13,9 +12,86 @@ tasks:
       - task --list
 
   doctor:
-    desc: Report tool versions against their pins; starts no workloads
+    desc: Report tool versions and Docker reachability against their pins; starts no workloads
     cmds:
       - scripts/doctor.sh
+
+  # Both read git's file list (tracked plus unignored untracked), so a primary checkout never
+  # walks .worktrees/; gofmt with no file argument would read stdin, hence the empty guard.
+  fmt:
+    desc: Format Go sources (changes files)
+    cmds:
+      - |
+        files=$(git ls-files --cached --others --exclude-standard '*.go')
+        echo "gofmt: $(printf '%s' "$files" | grep -c . || true) Go file(s)"
+        [ -z "$files" ] || gofmt -w $files
+
+  fmt:check:
+    desc: Fail if any Go source needs formatting (no writes)
+    cmds:
+      - |
+        files=$(git ls-files --cached --others --exclude-standard '*.go')
+        echo "gofmt: $(printf '%s' "$files" | grep -c . || true) Go file(s)"
+        drift=""
+        [ -z "$files" ] || drift=$(gofmt -l $files)
+        if [ -n "$drift" ]; then echo "gofmt drift:"; echo "$drift"; exit 1; fi
+
+  tidy:check:
+    desc: Fail if go.mod or go.sum is not tidy
+    cmds:
+      - go mod tidy -diff
+
+  cleanup-roots:check:
+    desc: Fail if a test stops, closes, or terminates under an unbounded context.Background/TODO
+    cmds:
+      - scripts/cleanup-roots-check.sh
+
+  build:
+    desc: Build all packages
+    cmds:
+      - scripts/gopkgs.sh go build ./...
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - scripts/gopkgs.sh go vet ./...
+
+  lint:
+    desc: Run the pinned revive, then the carried fixed-port guard and its fixture test
+    cmds:
+      - scripts/gopkgs.sh go tool revive -config revive.toml -formatter friendly ./...
+      - scripts/lint-test-ports.sh
+      - scripts/lint-test-ports_fixture_test.sh
+
+  vuln:
+    desc: Run the pinned govulncheck over all packages
+    cmds:
+      - scripts/gopkgs.sh go tool govulncheck ./...
+
+  test:unit:
+    desc: Run unit tests once with the race detector at one CPU
+    cmds:
+      - scripts/gopkgs.sh go test -race -count=1 -cpu 1 ./...
+
+  test:repeat:
+    desc: Run unit tests five times at one CPU without the race detector, shuffled; -- <pkgs> to focus
+    cmds:
+      # Carried from SemEngine's merge-gate spec: one CPU without -race is the setting that found
+      # SemEngine #40.
+      - 'scripts/gopkgs.sh go test -count=5 -cpu 1 -shuffle=on {{.CLI_ARGS | default "./..."}}'
+
+  test:integration:
+    desc: Run Docker-backed tests with plain go test, shuffled, two packages at a time; on a pass, record the tree it measured for cover:check; -- <pkgs> to focus
+    cmds:
+      # Task stops at the first failing command, so the fingerprint exists only after go test passed.
+      - rm -f coverage/integration.tree && mkdir -p coverage
+      - 'scripts/gopkgs.sh go test -race -failfast -tags=integration -count=1 -p 2 -shuffle=on -timeout 10m -coverprofile=coverage/integration.coverprofile {{.CLI_ARGS | default "./..."}}'
+      - scripts/tree-state.sh > coverage/integration.tree
+
+  cover:check:
+    desc: Fail below 80% coverage on each target listed in scripts/cover-check.sh, measured from the unit run, the last integration run, or both merged
+    cmds:
+      - scripts/cover-check.sh
 
   merge:check:
     desc: Fail while a class:flake issue is open that PR <n> does not close, main's rules lack the up-to-date setting, or PR <n> is a code PR, not a draft, without implemented-by and reviewed-by lines naming the agents; -- <n>. Reads GitHub, so not in verify

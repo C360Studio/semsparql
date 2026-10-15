@@ -11,24 +11,30 @@ Tests cited in the inventory were read, not run. No new library timing, failure 
 
 ## Dependencies and integration order
 
-The planned module is `github.com/c360studio/semsparql`. SemEngine is pinned to `v0.1.0-alpha.2`
-(`11da4721c2233a8e2b5b1d6236a97a44e06abbb6`), a published prerelease explicitly selected for this draft.
-On 2026-10-15, GitHub reports semengine #235 merged, #256/#259 closed, and SemVocab #1 open with no tags.
-The tagged inventory confirms SubjectIRI, blank-node/full-predicate export, and prefix Pattern support.
-No SemVocab version is invented. Task 0.1 waits for its merge and release; later tasks depend on 0.1.
-No local replacement, pseudo-version, fork or copy of either dependency is permitted.
+The module is `github.com/c360studio/semsparql` (`go.mod` on `go 1.26.9`, added in task 0.1). SemEngine is pinned
+to `v0.1.0-alpha.2` (`11da4721c2233a8e2b5b1d6236a97a44e06abbb6`), and SemVocab is pinned to `v0.1.0`
+(`64d3b8bc789c3e178a4cfb92465db4a02b1bd3f6`), tagged after `semvocab#6` merged Phase 1 BFO/CCO catalogs and built-in
+packs (`semvocab#1` remains open as the Stage 2 epic for Phase 2's ahead-of-time SHACL compiler, which SemSparql does
+not import). The tagged SemEngine inventory confirms `SubjectIRI`, blank-node/full-predicate export, and prefix
+`Pattern` support. The tagged SemVocab inventory confirms `packs.BFOCCOCoreSpec()` / `packs.RegisterBFOCCOCore(...)`
+and `diekm.Spec()` / `diekm.Register(...)` / `diekm.Shapes()`, with BFO 2020 bound to `obo` (`semvocab#1` ruling Q9),
+full BFO 2020 + CCO v2.2 superclass closures on `intel.platform` and `intel.observation`, and projected predicates
+`intel.role.assigned` and `intel.measurement.altitude-m` (hyphenated per `semvocab#1` ruling Q11). No local
+replacement, pseudo-version, fork or copy of either dependency is permitted (`TestPinnedDependencies`).
 
 PR #3 changes CI setup-node; PR #4 changes OpenSpec tooling. Neither overlaps these paths or capabilities.
-There is no required merge order with this draft; if #4 lands first, revalidate with its new tooling pin.
-Implementation proceeds 0 → 1 → 2 (MVP) → 3 → 4. Each issue task remains a reviewable implementation PR.
+There is no required merge order with this change; if #4 lands first, revalidate with its new tooling pin.
+Implementation proceeds 0 → 1 → 2 (MVP) → 3 → 4. Task 0.1 (`go.mod`, Go gates, and `internal/harness/contract`
+structural guards) and task 0.2 are complete; each remaining issue task is a reviewable implementation PR.
 Phase 5 is optional and separately decided, never an implicit prerequisite for the initial sidecar.
 
 ## Options considered
 
-1. Wait for SemVocab before writing any specification. This avoids provisional pack seams but delays review of
-   issue #1's existing contracts. It does not satisfy the requested draft now.
-2. Draft the issue's contracts now, preserve dependency/evidence holds, and implement only after approval and
-   release readiness. This is the proposed approach and the scope of this work.
+1. Wait for all D.1/D.2 runtime rulings before landing `go.mod` and Go verification gates. This leaves the repository
+   without `go.mod`, `TestAgentSetupParity`, or structural guards even after `semvocab v0.1.0` is tagged.
+2. Pin `semengine v0.1.0-alpha.2` and `semvocab v0.1.0` in `go.mod` now and complete task 0.1's Go verification gates
+   and structural guards while keeping runtime tasks (1.1–4.2) gated on their D.1/D.2 holds. This is the owner-selected
+   scope.
 3. Extend an existing upstream owner when a consumed seam proves missing, then consume a released fix. This is
    the required route for exporter conversion or query capability gaps; it may require a later owner-approved
    pin change. Local reimplementation would violate the boundary and is not an option.
@@ -150,14 +156,14 @@ failures through protocol errors. Correctness must not depend on reading documen
 
 ## Rulings and unresolved decisions
 
-| Source / decision | Draft treatment |
+| Source / decision | Treatment |
 | --- | --- |
-| User: draft from issue #1 | Four capability deltas and tasks 0.1–5.1; no runtime implementation |
-| User: semengine v0.1.0-alpha.2 | Exact prerelease pin above; no dependency file yet |
-| Issue #1 dependency gate | SemVocab merge/release hold retained on 0.1 |
-| Existing agent setup merged in PR #2 | Reuse it; Go gates and parity remain pending |
+| User: draft from issue #1 + execute task 0.1 | Four capability deltas, tasks 0.1–0.2 completed, runtime tasks 1.1–5.1 held |
+| User: semengine v0.1.0-alpha.2 | Pinned in `go.mod` (`11da4721c2233a8e2b5b1d6236a97a44e06abbb6`) |
+| User: semvocab v0.1.0 | Pinned in `go.mod` (`64d3b8bc789c3e178a4cfb92465db4a02b1bd3f6`); pack seams inspected |
+| Existing agent setup merged in PR #2 | Reconciled with Go gates and `internal/harness/contract` structural guards in task 0.1 |
 | Issue #1 datatype recipe vs pin evidence | Desired RDF meaning retained; algorithm unapproved until probe resolves mismatch |
 | Optional KV reader | Separate disposition task, not silently made mandatory |
 
-Owner acceptance is still needed. D.1 resolves the remaining HTTP/path/DESCRIBE semantics before their dependent
-implementation tasks. Export and startup capability evidence holds remain independently visible in tasks.md.
+Owner acceptance of D.1 and completion of D.2 probes are still needed before their dependent runtime tasks (`1.1`–`4.2`).
+Export and startup capability evidence holds remain independently visible in `tasks.md`.

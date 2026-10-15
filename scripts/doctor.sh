@@ -1,16 +1,26 @@
 #!/usr/bin/env bash
 # Report tool versions and compare each against its single pin. Starts no workloads.
-# Adapted from SemEngine 67d0ee9. The go and Docker checks join with task 0.1 of issue #1.
+# Adapted from SemEngine 67d0ee9.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 fail=0
 ok()   { printf '  ok    %-13s %s\n' "$1" "$2"; }
 bad()  { printf '  FAIL  %-13s %s\n' "$1" "$2"; fail=1; }
+warn() { printf '  warn  %-13s %s\n' "$1" "$2"; }
 
+# version_ge A B: true when A >= B (dotted numeric versions).
+version_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
 pkg_pin() { node -p "require('./package.json').devDependencies['$1']" 2>/dev/null; }
 
 echo "SemSparql doctor"
+
+# go: go.mod's go directive is the pin; the toolchain must be at least that.
+if command -v go >/dev/null; then
+  want=$(awk '$1=="go"{print $2; exit}' go.mod)
+  have=$(go env GOVERSION | sed 's/^go//')
+  if version_ge "$have" "$want"; then ok go "$have (go.mod: $want)"; else bad go "$have < go.mod $want"; fi
+else bad go "not found"; fi
 
 # task: .task-version is the pin (CI installs it from the same file).
 if command -v task >/dev/null; then
@@ -49,6 +59,21 @@ check_npm_tool() { # name bin
 }
 check_npm_tool @fission-ai/openspec openspec
 check_npm_tool markdownlint-cli2 markdownlint-cli2
+
+# docker: version and daemon reachability only; no containers are started.
+daemon=false
+if command -v docker >/dev/null; then
+  ok docker "client $(docker --version | sed 's/^Docker version //; s/,.*//')"
+  if docker info >/dev/null 2>&1; then ok docker-daemon "reachable"; daemon=true
+  else warn docker-daemon "not reachable (task test:integration needs it once Docker-backed tests land)"; fi
+else bad docker "not found"; fi
+
+if $daemon; then
+  context=$(docker context show 2>/dev/null || echo unknown)
+  endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || echo unknown)
+  ok docker-context "$context ($endpoint)"
+  if [ -n "${DOCKER_HOST:-}" ]; then warn docker-host "DOCKER_HOST=$DOCKER_HOST overrides the context"; fi
+fi
 
 if [ "$fail" -ne 0 ]; then echo "doctor: FAILED"; exit 1; fi
 echo "doctor: ok"

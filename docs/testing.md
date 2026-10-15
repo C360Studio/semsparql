@@ -1,9 +1,9 @@
 # Testing in SemSparql
 
 This page is for a developer about to write or review a test here. It covers what the test has to tell apart, which
-level to run it at, how to show it can fail, and what to record in the pull request. No Go code exists yet; the rules
-apply from the first test that task 0.1 and later tasks add. Gates and tasks named below that do not exist yet are
-marked as arriving with task 0.1.
+level to run it at, how to show it can fail, and what to record in the pull request. Task 0.1 added `go.mod`, the Go
+verification gates, and `internal/harness/contract` structural guards; product runtime packages (`irimap`, `reader`,
+`sparql`, `server`, `cmd/semsparql`) and the live NATS integration fixture arrive in tasks 1.1–4.2.
 
 ## Start with the wrong behavior
 
@@ -42,10 +42,10 @@ being protected.
 
 | Level | Command | What it can show |
 |---|---|---|
-| Unit | `task test:unit` (task 0.1) | One function or in-process behavior, including the server over `MemoryReader`. Runs with `-race`; no Docker, no network. |
-| Unit, repeated | `task test:repeat` (task 0.1) | A test that depends on run order, on state left by another test, or on timing. Unit tests run several times, shuffled. |
-| Integration | `task test:integration` (task 0.1) | Behavior that depends on a real NATS server and a real graph-ingest answering the query verbs. |
-| Structural guards | `task verify` | Repository-wide rules checked by tests or scripts. None exist yet. |
+| Unit | `task test:unit` | One function or in-process behavior, including the server over `MemoryReader`. Runs with `-race`; no Docker, no network. |
+| Unit, repeated | `task test:repeat` | A test that depends on run order, on state left by another test, or on timing. Unit tests run several times, shuffled. |
+| Integration | `task test:integration` | Behavior that depends on a real NATS server and a real graph-ingest answering the query verbs (fixture lands in task 4.2). |
+| Structural guards | `task verify` | Repository-wide rules checked by `internal/harness/contract` tests and scripts (`scripts/lint-test-ports.sh`, `scripts/cleanup-roots-check.sh`). |
 
 ### Unit tests
 
@@ -68,7 +68,9 @@ pretends to cover the NATS path with a fake.
 ### Structural guards
 
 A structural guard is a test or script that scans the whole repository for a rule, such as no fixed ports in tests, no
-`time.Sleep` in tests, no `Skip` calls, or no import that writes to the graph. None exist yet. When one is added,
+`time.Sleep` in tests, no `Skip` calls, or no import that writes to the graph. Task 0.1 added `TestAgentSetupParity`,
+`TestPinnedDependencies`, `TestNoSleepsInTests`, `TestNoSkippedTests`, `TestNoHiddenTests`, `scripts/lint-test-ports.sh`,
+and `scripts/cleanup-roots-check.sh`. When one is added,
 it gets a paired sensitivity test: the sensitivity test plants the violation in a temporary tree and requires the guard
 to name the planted file and the rule, so a guard that matches nothing, or fires for the wrong reason, fails.
 

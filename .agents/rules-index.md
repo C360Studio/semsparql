@@ -5,10 +5,10 @@ exactly one row here, in the same numbered domain and order. "Canonical home" is
 "Enforced by" names the command or test that fails when the rule is broken, or says "review only". Adopted from
 SemEngine's `.agents/rules-index.md` at `67d0ee9`.
 
-Until task 0.1 of issue #1 adds `go.mod`, no Go test or structural guard exists, so almost every row is review only.
-Where issue #1 names a proving test, the row lists it as *planned*: a planned test is not enforcement until it is in
-the tree and run by `task verify`. A change that can turn a "review only" row into a failing command should, and
-updates this row and the `AGENTS.md` gate in the same change.
+Task 0.1 of issue #1 added `go.mod`, Go verification gates, and `internal/harness/contract` structural guards. Where
+issue #1 names a runtime proving test not yet in the tree, the row lists it as *planned*: a planned test is not
+enforcement until it is in the tree and run by `task verify`. A change that can turn a "review only" row into a
+failing command should, and updates this row and the `AGENTS.md` gate in the same change.
 
 ## 1. Read-only boundary and upstream
 
@@ -18,7 +18,7 @@ updates this row and the `AGENTS.md` gate in the same change.
 | Read only through `reader.GraphReader` over verbs declared in `graph.QueryVerbs()`; no literal `graph.ingest.query.*` subject | developer contract § Read-only boundary and query limits; `.agents/skills/query-pattern/SKILL.md` | review only; planned: a structural guard on subject literals, like SemEngine's `TestReservedSubjectsDeclaredOnce` |
 | IRI mapping and RDF graph output come from `semengine/vocabulary/export`; no second IRI mapping, no RDF graph writers | developer and architect contracts; issue #1 §1, §2.2.1 | review only; planned: `TestIRIMapperMatchesExporter` (task 1.1) for byte-identical subject IRIs |
 | A KV watch reader declares a memory ceiling and freshness, and is a stopgap, not a competing index | developer and architect contracts; issue #1 §2.1 | review only (task 5.1 is optional and deferred) |
-| SemEngine and SemVocab pinned to released tags; no `replace`, fork, copy, or pseudo-version | `.agents/protocol.md` § Upstream boundary; reviewer contract | review only; `task tidy:check` joins with task 0.1 but does not refuse a `replace` |
+| SemEngine and SemVocab pinned to released tags; no `replace`, fork, copy, or pseudo-version | `.agents/protocol.md` § Upstream boundary; reviewer contract | `task tidy:check` and `TestPinnedDependencies` / `TestPinnedDependenciesSensitivity` (`internal/harness/contract/deps_test.go`, in `task verify`) refuse `replace`/`exclude` directives and pseudo-versions in `go.mod`; fork or local copy is review only |
 | Upstream gaps filed upstream; the dependent task carries `Hold:` naming the issue | `.agents/protocol.md` § Upstream boundary; architect contract § Boundary check | `task spec:check` fails on a `Hold:` outside a task; that the gap was filed upstream is review only |
 | Agents mutate only this repository; sister repositories are read-only | `.agents/protocol.md` | review only |
 
@@ -48,10 +48,10 @@ updates this row and the `AGENTS.md` gate in the same change.
 
 | Rule | Canonical home | Enforced by |
 | --- | --- | --- |
-| No `time.Sleep` in a test file | `docs/testing.md`; developer contract § Test and operational fidelity | review only; planned: structural guard with a paired sensitivity test |
-| Tests bind no fixed address or port | `docs/testing.md`; developer contract | review only; planned: SemEngine's `scripts/lint-test-ports.sh` adapted into `task lint` (task 0.1) |
-| No `Skip`/`Skipf`/`SkipNow`; no build tag other than `integration` | `docs/testing.md`; developer contract | review only; planned: structural guard |
-| Test cleanup never stops, closes, or terminates under an unbounded context | `docs/testing.md`; developer contract § Context ownership | review only; planned: SemEngine's `scripts/cleanup-roots-check.sh` adapted (task 0.1) |
+| No `time.Sleep` in a test file | `docs/testing.md`; developer contract § Test and operational fidelity | `TestNoSleepsInTests` and `TestNoSleepsInTestsSensitivity` (`internal/harness/contract/testtext_test.go`, in `task verify`) |
+| Tests bind no fixed address or port | `docs/testing.md`; developer contract | `scripts/lint-test-ports.sh` and `scripts/lint-test-ports_fixture_test.sh` in `task lint` (`task verify`); indirect or non-`net.Listen` forms are review only |
+| No `Skip`/`Skipf`/`SkipNow`; no build tag other than `integration` | `docs/testing.md`; developer contract | `TestNoSkippedTests`, `TestNoSkippedTestsSensitivity`, `TestNoHiddenTests`, and `TestNoHiddenTestsSensitivity` (`internal/harness/contract/testtext_test.go`, in `task verify`); helper indirection and filename platform suffixes are review only |
+| Test cleanup never stops, closes, or terminates under an unbounded context | `docs/testing.md`; developer contract § Context ownership | `scripts/cleanup-roots-check.sh` in `task cleanup-roots:check` (`task verify`) and `TestCleanupRootsCheckSensitivity` (`internal/harness/contract/cleanuproots_test.go`); multi-line or indirect calls are review only |
 | Independent oracle; tests shown able to fail | `docs/testing.md` "Show that the test can fail"; developer and reviewer contracts | review only |
 | Every external-input parser ships a `Fuzz*` target with accepted and rejected seed classes | developer contract § Test and operational fidelity; reviewer contract § Test fidelity | review only; planned: `FuzzParseSPARQL` (task 2.1) |
 | Generated-check decision recorded; Rapid seed and checks completed recorded; histories against a reference model | `docs/testing.md` "Decide whether generated checks are needed", "Running and replaying a Rapid test" | review only; planned: `TestPropIRIMapperRoundTrip` (task 1.1), folding equivalence (task 3.2) |
@@ -85,8 +85,8 @@ updates this row and the `AGENTS.md` gate in the same change.
 | A new rule names its enforcement and adds rows here and in `AGENTS.md` | reviewer contract § Contract and task-truth review | review only |
 | Clarify Deliverable, Scope, Definition of Done and Stop boundary before work | `.agents/protocol.md` "Clarify"; `.agents/README.md` | review only |
 | Briefs carry intent and the artifact; resume for continuity, fresh for mechanics | `.agents/README.md` § Orchestrating role agents | review only |
-| Model tier and effort routing per role | `.agents/README.md` § Model routing | review only; planned: `TestAgentSetupParity` (task 0.1) for the Claude and Codex adapters |
-| `AGENTS.md` under 24,000 bytes and matching this file; adapters thin and pointing to their contract | `.agents/README.md` § Read-only parity smoke | review only; planned: `TestAgentSetupParity` (task 0.1) |
+| Model tier and effort routing per role | `.agents/README.md` § Model routing | `TestAgentSetupParity` and `TestAgentSetupParitySensitivity` (`internal/harness/contract/agentsetup_test.go`, in `task verify`) for the Claude and Codex adapters; Gemini routing is review only |
+| `AGENTS.md` under 24,000 bytes and matching this file; adapters thin and pointing to their contract | `.agents/README.md` § Read-only parity smoke | `TestAgentSetupParity` and `TestAgentSetupParitySensitivity` (`internal/harness/contract/agentsetup_test.go`, in `task verify`); semantic correspondence of individual rows is review only |
 | Claim branches update by merging `origin/main`, never rebase or force-push | `.agents/protocol.md` "Land" | review only |
 | Cited evidence can be opened on another machine; ignored paths named local only | `semsparql-handoff` and `semsparql-preflight` skills | review only |
 | Docs for a working developer: terms defined, no jargon, no marketing | technical-writer contract; reviewer contract | review only; `task docs:check` covers Markdown form only |

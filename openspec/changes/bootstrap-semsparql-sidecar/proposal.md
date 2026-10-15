@@ -3,22 +3,27 @@
 ## Why
 
 [Issue #1](https://github.com/C360Studio/semsparql/issues/1) defines Stage 3: a read-only SPARQL and JSON-LD
-edge for DIEKM, BFO and CCO adopters, with RDF export for external SHACL validation. The repository currently
-contains agent guidance and documentation tooling, but no Go runtime. This change records the proposed target
-before implementation, keeping semantic-web execution outside SemEngine core (ADR-107).
+edge for DIEKM, BFO and CCO adopters, with RDF export for external SHACL validation. This change records the
+target specification and completes Task 0.1 (`go.mod` dependency pins, Go verification gates, and structural
+guards), keeping semantic-web execution outside SemEngine core (ADR-107).
 
 ## What Changes
 
 - Define identity mapping, virtual RDF planning, projection folding/unfolding, and HTTP query/export requirements.
 - Preserve issue #1's phased tasks, early SELECT/ASK MVP, proving tests and optional deferred KV reader.
-- Pin the planned SemEngine dependency to **`v0.1.0-alpha.2`**, resolving to
-  `11da4721c2233a8e2b5b1d6236a97a44e06abbb6`, as explicitly requested by the user.
-- Keep bootstrap implementation blocked on SemVocab #1 merging and a released SemVocab tag being selected.
-- Record unproved exporter and server-capability seams before they become implementation assumptions.
+- Pin SemEngine in `go.mod` to **`v0.1.0-alpha.2`** (`11da4721c2233a8e2b5b1d6236a97a44e06abbb6`) and SemVocab
+  to **`v0.1.0`** (`64d3b8bc789c3e178a4cfb92465db4a02b1bd3f6`).
+- Complete Task 0.1: add `go.mod`/`go.sum`, `revive.toml`, Go Taskfile/CI gates (`fmt`, `fmt:check`, `tidy:check`,
+  `cleanup-roots:check`, `build`, `vet`, `lint`, `vuln`, `test:unit`, `test:repeat`, `test:integration`,
+  `cover:check`), `internal/harness/contract` structural guards (`TestAgentSetupParity`,
+  `TestPinnedDependencies`, `TestNoSleepsInTests`, `TestNoSkippedTests`, `TestNoHiddenTests`,
+  `TestCleanupRootsCheckSensitivity`, `TestCoverCheck*`) with paired sensitivity tests, and reconcile `AGENTS.md`
+  and `.agents/rules-index.md`.
+- Record unproved exporter and server-capability seams as explicit holds before product runtime packages (`1.1`–`4.2`)
+  begin.
 
-This is a local documentation draft. It adds no `go.mod`, runtime, dependency change, or current capability spec.
-Drafting does not approve implementation. Do not archive or promote these deltas until the runtime exists and
-its tasks are complete. A draft-document PR would address issue #1, not close it.
+No product runtime packages (`irimap`, `reader`, `sparql`, `server`, `cmd/semsparql`) or current capability specs
+are added yet. Do not archive or promote these capability deltas until the runtime tasks are complete.
 
 ## Capabilities
 
@@ -35,14 +40,15 @@ None. No current capability specs exist.
 
 ## Impact
 
-Future packages: `irimap`, `reader`, `sparql`, `server`, and `cmd/semsparql`; future docs cover architecture and
-external SHACL gates. The existing agent/tooling setup is retained; Go gates and adapter parity checks join task 0.1.
-SemEngine supplies graph query verbs, validators, registry metadata and RDF serialization. SemVocab supplies packs.
-No upstream checkout is modified. No aliases, updates, named graphs, federation, embedded SHACL engine, or local
-RDF writers are added. Full SPARQL 1.1 language support is not claimed; the HTTP protocol serves the v1 subset.
+Task 0.1 adds `go.mod`, `go.sum`, `revive.toml`, `scripts/`, and `internal/harness/contract/`. Future tasks add
+`irimap`, `reader`, `sparql`, `server`, and `cmd/semsparql`, plus architecture and external SHACL documentation.
+SemEngine supplies graph query verbs, validators, registry metadata and RDF serialization. SemVocab supplies
+`bfo-cco-core` and `diekm` packs and embedded SHACL shapes. No upstream checkout is modified. No aliases, updates,
+named graphs, federation, embedded SHACL engine, or local RDF writers are added. Full SPARQL 1.1 language support
+is not claimed; the HTTP protocol serves the v1 subset.
 
-## Draft acceptance
+## Acceptance
 
-The deliverable is proposal, design, task list, evidence inventory and four validated capability deltas.
-Acceptance checks are `task verify`, `task spec:queue`, and whitespace checks, plus independent draft review.
-Stop at the local draft: owner design acceptance, SemVocab release, runtime work and publication remain separate.
+For this slice (OpenSpec target + Task 0.1), acceptance checks are `task doctor`, `task verify` (running
+`spec:check`, `docs:check`, `fmt:check`, `tidy:check`, `cleanup-roots:check`, `build`, `vet`, `lint`, `vuln`,
+`test:unit`, `test:integration`, `cover:check`, and `test:repeat`), and `task spec:queue` on a clean working tree.

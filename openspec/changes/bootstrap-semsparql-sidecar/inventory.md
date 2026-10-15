@@ -3,22 +3,22 @@
 base: b64f35e989a1b3fd12d81629ae1c339bf7ade823
 
 SemEngine inspected: `v0.1.0-alpha.2`, commit `11da4721c2233a8e2b5b1d6236a97a44e06abbb6`.
-SemVocab: no released tag available; issue #1 remains open (GitHub checked 2026-10-15).
-Scope: requested local OpenSpec draft, not implementation or approval.
+SemVocab inspected: `v0.1.0`, commit `64d3b8bc789c3e178a4cfb92465db4a02b1bd3f6` (`semvocab#1` closed via `semvocab#6`).
+Scope: OpenSpec change packet + Task 0.1 (`go.mod`, Go verification gates, `TestAgentSetupParity`).
 Source: [semsparql issue #1](https://github.com/C360Studio/semsparql/issues/1), read in full.
 This materializes the architect's inventory, with line wrapping and condensed evidence tables.
 
 ## Current surface and claimed gap
 
-`git ls-files` lists no `go.mod`, `*.go`, or runtime package at the baseline.
-`openspec/specs/` and `openspec/changes/` contain only `.gitkeep`.
+At baseline `b64f35e989a1b3fd12d81629ae1c339bf7ade823`, `git ls-files` listed no `go.mod`, `*.go`, or runtime package.
+Task 0.1 adds `go.mod` (`github.com/c360studio/semsparql`), Go verification gates, and `internal/harness/contract`
+tests (`TestAgentSetupParity`, dependency pin checks, and gate sensitivity tests).
 `git grep -n -E 'context.Context|/sparql|/export|GraphReader' -- '*.go' openspec/specs openspec/changes`
-returned no matches. There are no current runtime callers, readers, parser, lifecycle owners, or local RDF writers.
-There is no module workspace for `gopls`; tagged declaration inspection is not a call-graph proof.
+still returns no runtime callers, readers, parser, lifecycle owners, or local RDF writers before Phase 1.
 
 - `AGENTS.md:11` describes the read-only SPARQL/JSON-LD sidecar purpose.
-- `AGENTS.md:55` requires reads through `reader.GraphReader` and declared query verbs.
-- `AGENTS.md:58` requires released dependency tags, without forks, replacements or pseudo-versions.
+- `AGENTS.md:54` requires reads through `reader.GraphReader` and declared query verbs.
+- `AGENTS.md:57` requires released dependency tags, without forks, replacements or pseudo-versions.
 - `openspec/config.yaml:6` prohibits writes to `ENTITY_STATES` and `graph.mutation.*` publishes.
 
 Upstream search (all upstream paths below refer to SemEngine at the pinned tag):
@@ -32,8 +32,7 @@ This is not a claim about every upstream package.
 
 ## Existing owners and tagged evidence
 
-Prefix every upstream path below with `semengine@v0.1.0-alpha.2:`.
-Tests were inspected as source, not executed; they do not prove the planned integration.
+Prefix every upstream path in the first table below with `semengine@v0.1.0-alpha.2:`.
 
 | Fact | Declaration | Test evidence |
 | --- | --- | --- |
@@ -66,12 +65,23 @@ Lines 10 and 17 default/cap pages at 1,000. Short pages are not proof of exhaust
 The literal-prefix validator rejects empty input and wildcards; `PrefixQueryRequest` separately permits an empty
 prefix as a match-all sentinel. That sentinel is not a valid literal prefix and needs an explicit bounded-read contract.
 
+Prefix every upstream path in the table below with `semvocab@v0.1.0:`.
+
+| Fact | Declaration | Test evidence |
+| --- | --- | --- |
+| BFO/CCO core pack spec & registration | `packs/packs.go:25`, `func BFOCCOCoreSpec() (vocabulary.PackSpec, error)`; `:38`, `func RegisterBFOCCOCore(opts ...vocabulary.PackOption) error` | `packs/packs_test.go`, `internal/harness/contract/deps_test.go` |
+| DIEKM pack spec, registration & SHACL shapes | `packs/diekm/diekm.go:34`, `func Spec() (vocabulary.PackSpec, error)`; `:49`, `func Register(opts ...vocabulary.PackOption) error`; `:62`, `func Shapes() []byte` | `packs/diekm/diekm_test.go`, `internal/harness/contract/deps_test.go` |
+| BFO 2020 & CCO v2.2 prefixes | `packs/diekm/diekm.yaml:9–10`, `obo: http://purl.obolibrary.org/obo/` and `cco: https://www.commoncoreontologies.org/` | `packs/diekm/diekm_test.go` |
+| DIEKM entity types & superclass closure | `packs/diekm/diekm.yaml:24` (`intel.platform`) and `:35` (`intel.observation`), each with full BFO 2020 + CCO v2.2 superclass closures | `packs/diekm/diekm_test.go` |
+| DIEKM projections | `packs/diekm/diekm.yaml:46` (`intel.role.assigned`, 1-step) and `:58` (`intel.measurement.altitude-m`, 3-step ending in `https://w3id.org/c360/diekm#altitudeMetersValue`) | `packs/diekm/diekm_test.go` |
+
 ## Adjacent claims
 
 Issue #1 defines `sparql-protocol`, `bgp-planner`, `reification-bridge`, and `iri-mapping`.
-Its task list is not implementation evidence. Task 0.1 still needs a SemVocab release.
-The user's requested alpha pin selects the SemEngine prerelease for this draft.
+Task 0.1 pins `github.com/c360studio/semengine v0.1.0-alpha.2` and `github.com/c360studio/semvocab v0.1.0` in
+`go.mod` and verifies their exported seams in `internal/harness/contract/deps_test.go`.
 SemEngine #235 is merged; #256/#259 are closed and their surfaces exist in the inspected tag.
+SemVocab #1 is closed via PR #6 and released at `v0.1.0`.
 
 `docs/adr/107-semantic-web-vocabulary-lives-at-the-export-edge.md:59` states:
 "Semantic-web vocabulary belongs at the export edge".
@@ -122,12 +132,12 @@ Optional task 5.1 needs a deeper owner/lifecycle/freshness inventory before desi
 
 | Boundary | Current status |
 | --- | --- |
-| Zero mutation | Holds: no runtime; `AGENTS.md:54` prohibits mutation |
-| Reads through GraphReader | Standing constraint, not implementation (`AGENTS.md:55`) |
+| Zero mutation | Holds: no runtime; `AGENTS.md:53` prohibits mutation |
+| Reads through GraphReader | Standing constraint, not implementation (`AGENTS.md:54`) |
 | No RDF writers / one IRI mapping | Holds: upstream Serialize and SubjectIRI exist |
 | Not a competing index | At risk for deferred 5.1; cache evidence absent |
 | Loud limits | At risk until HTTP contract is specified; a page is not a complete query result |
-| Safe exposure | Standing constraint: localhost or bearer/mTLS (`AGENTS.md:82`) |
+| Safe exposure | Standing constraint: localhost or bearer/mTLS (`AGENTS.md:81`) |
 | Upstream untouched | Holds: only tagged Git objects inspected |
 
 ## Adopter seams
@@ -151,7 +161,9 @@ Clients should not have to predict result size or scan cost to avoid incomplete 
 2. Canonical object: `vocabulary/export/ntriples.go:46`, `formatNTriplesObject`, is unexported.
    The reuse path for the blank-node hash input is unproved.
 3. A client library pin does not establish the running server version. Missing-pattern startup detection is unproved.
-4. SemVocab imports, registrations, projections and ancestor closure cannot yet be pinned.
+4. Resolved at `semvocab@v0.1.0` (`64d3b8bc789c3e178a4cfb92465db4a02b1bd3f6`): `packs.BFOCCOCoreSpec` /
+   `packs.RegisterBFOCCOCore` and `diekm.Spec` / `diekm.Register` / `diekm.Shapes` are pinned in `go.mod` and
+   verified by `TestPinnedUpstreamSeamsSmoke` in `internal/harness/contract/deps_test.go`.
 5. Standalone subclass paths, DESCRIBE scope, type merging, duplicate handling, truncation signals and error statuses
    need precise draft contracts.
 6. Cursor pagination gives no snapshot guarantee. Entity budgets do not bound server key scans.
@@ -161,4 +173,4 @@ Clients should not have to predict result size or scan cost to avoid incomplete 
    `ntriples.go:15–22` skips empty subjects/predicates or invalid objects; `export_test.go:134`,
    `TestSerialize_SkipsInvalidTriples`, covers this. A successful serializer call alone does not prove that every
    intended triple was rendered. The sidecar loud-failure seam needs validation/probing before implementation.
-10. No runtime tests/probes were executed. This inventory grants no design or implementation approval.
+10. Task 0.1 contract tests are executed via `task verify`; runtime sidecar packages (Phases 1–4) remain planned.

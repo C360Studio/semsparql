@@ -1,9 +1,10 @@
 # Bootstrap tasks
 
-These are proposed implementation tasks from issue #1, not claims of implemented code. Each numbered issue task
-is one reviewable PR. Dependencies run 0 → 1 → 2 → 3 → 4, with the MVP at 2.3. The source issue remains open.
-Only 0.2 is checked because the upstream issues were filed and their status was verified. PR #2 already supplies
-agent/docs tooling; task 0.1 is deliberately not checked as a whole. No Go gates or tests have run in this draft.
+These are the implementation tasks from issue #1. Each numbered issue task is one reviewable PR. Dependencies run
+0 → 1 → 2 → 3 → 4, with the MVP at 2.3. The source issue remains open. Tasks 0.1 and 0.2 are complete: `go.mod` pins
+`semengine v0.1.0-alpha.2` and `semvocab v0.1.0`, the Go verification gates and `internal/harness/contract` structural
+guards run in `task verify`, and `AGENTS.md` and `.agents/rules-index.md` are reconciled. Product runtime tasks
+(`1.1`–`4.2`) remain gated on D.1 and D.2.
 
 ## Design readiness
 
@@ -17,10 +18,9 @@ agent/docs tooling; task 0.1 is deliberately not checked as a whole. No Go gates
 
 ## 0. Bootstrap
 
-- [ ] 0.1 Add go.mod for github.com/c360studio/semsparql, pin semengine v0.1.0-alpha.2 and a selected released
-  SemVocab tag. Extend the existing Taskfile/CI with Go fmt/tidy/build/vet/lint/vuln, unit/repeat/integration/coverage
+- [x] 0.1 Add go.mod for github.com/c360studio/semsparql, pin semengine v0.1.0-alpha.2 and semvocab v0.1.0.
+  Extend the existing Taskfile/CI with Go fmt/tidy/build/vet/lint/vuln, unit/repeat/integration/coverage
   gates; add TestAgentSetupParity and its sensitivity check; reconcile AGENTS.md against actual runtime state.
-  Hold: C360Studio/semvocab#1 must merge and be released/tagged; select and verify that tag. Also depends on D.1.
 - [x] 0.2 File semengine#256 (SubjectIRI, blank-node/full-IRI export) and #259 (prefix Pattern support).
   Both are closed and their surfaces exist in v0.1.0-alpha.2; see inventory.md. Integration proof remains below.
 
@@ -52,7 +52,7 @@ agent/docs tooling; task 0.1 is deliberately not checked as a whole. No Go gates
 - [ ] 3.1 Implement virtual rdf:type/subclass resolution and startup ancestor-closure validation. Prove
   TestVirtualRDFTypeAndSubclassResolution and TestSuperclassClosureStartupCheck, including wildcard systems,
   unbound classes, zero-length paths and explicit/virtual graph-set merging.
-  Hold: D.1 must settle standalone subclass-path semantics; the selected SemVocab pack must be inspectable.
+  Hold: D.1 must settle standalone subclass-path semantics.
 - [ ] 3.2 Implement complete-chain folding and equivalent fallback evaluation. Prove
   TestBGPFoldingCollapsesDIEKMChains plus Rapid equivalence against an independently materialized unfolded graph,
   including partial chains, missing type constraints, projected intermediates, extra constraints/FILTERs,
