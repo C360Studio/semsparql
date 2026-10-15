@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  # Every PR gets CI whatever its base, so stacked PRs are covered too. Listing
+  # types replaces GitHub's default three, so they are listed with
+  # ready_for_review: marking a draft ready starts the run that applies the
+  # review check, which does not fail a draft.
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Superseded PR runs are cancelled; pushes to main are not, so two quick merges
+# never leave a cancelled Required on a commit that was never broken.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+# Adopted from SemEngine 67d0ee9. Every job is pinned to ubuntu-24.04; moving to
+# another image is a change of its own, whose CI run is task verify on the new image.
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # actions/setup-go (go-version-file: go.mod) joins with task 0.1 of issue #1.
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      # .task-version is the single pin; task doctor compares against the same file.
+      - name: Read Task version pin
+        id: task-version
+        run: echo "version=$(tr -d '[:space:]' < .task-version)" >> "$GITHUB_OUTPUT"
+
+      - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
+        with:
+          version: ${{ steps.task-version.outputs.version }}
+
+      - run: task doctor
+
+      # Once task 0.1 adds test:integration, verify needs the runner's Docker daemon.
+      - run: task verify
+
+  # Up-to-date rule, review check and known-flake check (scripts/merge-check.sh).
+  # It reads GitHub, so it is a job of its own and not part of task verify. A
+  # code pull request that is not a draft fails unless its description names the
+  # other agent as reviewer; editing the description starts no run, so the job
+  # is run again after the edit. The token gets these three reads and nothing
+  # else; a pull request from a fork or Dependabot gets a read-only token, which
+  # is all the job needs. On a push to main the number is empty and the script
+  # takes its push path.
+  merge-check:
+    name: Merge check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the up-to-date rule, the cross-agent review and known flakes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: scripts/merge-check.sh "$PR_NUMBER"
+
+  # Single required status check: anything other than success in a needed job
+  # (failure, cancelled, skipped, or a job that never ran) fails the aggregate.
+  required:
+    name: Required
+    needs: [verify, merge-check]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every needed job to succeed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "needed job results: ${RESULTS:-<none>}"
+          if [ -z "$RESULTS" ]; then echo "no needed jobs reported"; exit 1; fi
+          for r in $RESULTS; do
+            if [ "$r" != "success" ]; then echo "required check did not succeed: $r"; exit 1; fi
+          done

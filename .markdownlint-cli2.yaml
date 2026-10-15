@@ -1,0 +1,7 @@
+# Files markdownlint-cli2 must not lint: dependencies, and the OpenSpec-generated current specs.
+# openspec/specs/** is rewritten by `openspec archive` with its own formatting (no blank lines around
+# headings); its content is validated by `task spec:check`. Human-written openspec/changes/** stays linted.
+ignores:
+  - node_modules/**
+  - "**/node_modules/**"
+  - openspec/specs/**
