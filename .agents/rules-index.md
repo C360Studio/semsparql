@@ -5,10 +5,12 @@ exactly one row here, in the same numbered domain and order. "Canonical home" is
 "Enforced by" names the command or test that fails when the rule is broken, or says "review only". Adopted from
 SemEngine's `.agents/rules-index.md` at `67d0ee9`.
 
-Task 0.1 of issue #1 added `go.mod`, Go verification gates, and `internal/harness/contract` structural guards. Where
-issue #1 names a runtime proving test not yet in the tree, the row lists it as *planned*: a planned test is not
-enforcement until it is in the tree and run by `task verify`. A change that can turn a "review only" row into a
-failing command should, and updates this row and the `AGENTS.md` gate in the same change.
+Task 0.1 of issue #1 added `go.mod`, Go verification gates, and `internal/harness/contract` structural guards; Task 1.1
+added `irimap` (`TestIRIMapperRoundTrip`, `TestPropIRIMapperRoundTrip`, `TestIRIMapperMatchesExporter`,
+`TestBlankNodeIDMultiValued`, and `FuzzIRIToEntityID`). Where issue #1 names a runtime proving test not yet in the
+tree, the row lists it as *planned*: a planned test is not enforcement until it is in the tree and run by `task verify`.
+A change that can turn a "review only" row into a failing command should, and updates this row and the `AGENTS.md` gate
+in the same change.
 
 ## 1. Read-only boundary and upstream
 
@@ -16,7 +18,7 @@ failing command should, and updates this row and the `AGENTS.md` gate in the sam
 | --- | --- | --- |
 | Never write `ENTITY_STATES` or publish `graph.mutation.*` | developer contract § Read-only boundary and query limits; reviewer contract § Read-only boundary and query review (`BLOCKING`); issue #1 §2.1 | review only; planned: an import/call guard refusing SemEngine's mutation and KV-write APIs outside tests |
 | Read only through `reader.GraphReader` over verbs declared in `graph.QueryVerbs()`; no literal `graph.ingest.query.*` subject | developer contract § Read-only boundary and query limits; `.agents/skills/query-pattern/SKILL.md` | review only; planned: a structural guard on subject literals, like SemEngine's `TestReservedSubjectsDeclaredOnce` |
-| IRI mapping and RDF graph output come from `semengine/vocabulary/export`; no second IRI mapping, no RDF graph writers | developer and architect contracts; issue #1 §1, §2.2.1 | review only; planned: `TestIRIMapperMatchesExporter` (task 1.1) for byte-identical subject IRIs |
+| IRI mapping and RDF graph output come from `semengine/vocabulary/export`; no second IRI mapping, no RDF graph writers | developer and architect contracts; issue #1 §1, §2.2.1 | `TestIRIMapperMatchesExporter` and `TestPropIRIMapperRoundTrip` (`irimap/mapper_test.go`, in `task verify`) for byte-identical subject IRIs; absence of local RDF graph writers is review only (planned: task 3.3) |
 | A KV watch reader declares a memory ceiling and freshness, and is a stopgap, not a competing index | developer and architect contracts; issue #1 §2.1 | review only (task 5.1 is optional and deferred) |
 | SemEngine and SemVocab pinned to released tags; no `replace`, fork, copy, or pseudo-version | `.agents/protocol.md` § Upstream boundary; reviewer contract | `task tidy:check` and `TestPinnedDependencies` / `TestPinnedDependenciesSensitivity` (`internal/harness/contract/deps_test.go`, in `task verify`) refuse `replace`/`exclude` directives and pseudo-versions in `go.mod`; fork or local copy is review only |
 | Upstream gaps filed upstream; the dependent task carries `Hold:` naming the issue | `.agents/protocol.md` § Upstream boundary; architect contract § Boundary check | `task spec:check` fails on a `Hold:` outside a task; that the gap was filed upstream is review only |
@@ -37,7 +39,7 @@ failing command should, and updates this row and the `AGENTS.md` gate in the sam
 
 | Rule | Canonical home | Enforced by |
 | --- | --- | --- |
-| Entity IDs, patterns and prefixes pass SemEngine's shared validators at entry | developer contract § Semantic identity; reviewer contract § Read-only boundary and query review | review only |
+| Entity IDs, patterns and prefixes pass SemEngine's shared validators at entry | developer contract § Semantic identity; reviewer contract § Read-only boundary and query review | `TestIRIMapperRoundTrip` and `FuzzIRIToEntityID` (`irimap/mapper_test.go`, in `task verify`) for `irimap` entity IDs and IRIs; reader pattern/prefix entry validation is review only (planned: task 1.2) |
 | Sort and deduplicate complete entity-ID and RDF-term sets before a limit; SPARQL solutions keep duplicates unless `DISTINCT`/`REDUCED` (SPARQL 1.1 §15.3) and are ordered deterministically before `LIMIT`/`OFFSET` | developer contract § Semantic identity; reviewer contract § Read-only boundary and query review | review only; planned: `TestScanPatternReaderParity` (task 4.1) for sorted ID sets across pages; a duplicate-preserving `UNION` case in the executor tests (task 2.2) |
 | Never report partial replay, index or result state as ready or complete | developer contract § Guarantee and signal contracts | review only |
 | Limits give deterministic errors, no silent truncation unless opted in; `?s ?p ?o` stopped by the scan budget | developer contract § Read-only boundary and query limits; issue #1 §2.6 | review only; planned: `TestQueryLimits` (task 2.2/2.3) |
@@ -53,8 +55,8 @@ failing command should, and updates this row and the `AGENTS.md` gate in the sam
 | No `Skip`/`Skipf`/`SkipNow`; no build tag other than `integration` | `docs/testing.md`; developer contract | `TestNoSkippedTests`, `TestNoSkippedTestsSensitivity`, `TestNoHiddenTests`, and `TestNoHiddenTestsSensitivity` (`internal/harness/contract/testtext_test.go`, in `task verify`); helper indirection and filename platform suffixes are review only |
 | Test cleanup never stops, closes, or terminates under an unbounded context | `docs/testing.md`; developer contract § Context ownership | `scripts/cleanup-roots-check.sh` in `task cleanup-roots:check` (`task verify`) and `TestCleanupRootsCheckSensitivity` (`internal/harness/contract/cleanuproots_test.go`); multi-line or indirect calls are review only |
 | Independent oracle; tests shown able to fail | `docs/testing.md` "Show that the test can fail"; developer and reviewer contracts | review only |
-| Every external-input parser ships a `Fuzz*` target with accepted and rejected seed classes | developer contract § Test and operational fidelity; reviewer contract § Test fidelity | review only; planned: `FuzzParseSPARQL` (task 2.1) |
-| Generated-check decision recorded; Rapid seed and checks completed recorded; histories against a reference model | `docs/testing.md` "Decide whether generated checks are needed", "Running and replaying a Rapid test" | review only; planned: `TestPropIRIMapperRoundTrip` (task 1.1), folding equivalence (task 3.2) |
+| Every external-input parser ships a `Fuzz*` target with accepted and rejected seed classes | developer contract § Test and operational fidelity; reviewer contract § Test fidelity | `FuzzIRIToEntityID` (`irimap/mapper_test.go`, in `task verify`) for IRI/entity-ID inversion; other external-input parsers are review only (planned: `FuzzParseSPARQL` in task 2.1) |
+| Generated-check decision recorded; Rapid seed and checks completed recorded; histories against a reference model | `docs/testing.md` "Decide whether generated checks are needed", "Running and replaying a Rapid test" | `TestPropIRIMapperRoundTrip` (`irimap/mapper_test.go`, in `task verify`) for IRI round-trip law; recording of decision/seed/checks is review only; planned: folding equivalence (task 3.2) |
 | Mutation checks report observed outcomes; in-tree wrong changes use `cp` backup and verified SHA-256 restore | developer contract § Required workflow; `docs/testing.md` "Show that the test can fail" | review only (SemSparql has no `task mutate:check`) |
 | NATS key, filter and query-verb claims proven against a real NATS server and graph-ingest | developer contract § Semantic identity | review only; planned: integration fixture (task 4.2) |
 | Never run a git command that can discard working-tree state | developer, reviewer and architect contracts | review only |

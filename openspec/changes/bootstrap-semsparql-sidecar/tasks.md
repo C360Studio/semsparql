@@ -1,11 +1,12 @@
 # Bootstrap tasks
 
 These are the implementation tasks from issue #1. Each numbered issue task is one reviewable PR. Dependencies run
-0 → 1 → 2 → 3 → 4, with the MVP at 2.3. The source issue remains open. Tasks 0.1, 0.2, D.1, D.2, and 5.1 (disposition)
-are complete: `go.mod` pins `semengine v0.1.0-alpha.2` and `semvocab v0.1.0`, the Go verification gates and
-`internal/harness/contract` structural guards and D.2 upstream probes run in `task verify`, owner consumer-contract
-rulings D.1a–D.1e are recorded in `design.md` and `specs/**`, and `AGENTS.md` and `.agents/rules-index.md` are
-reconciled. Runtime tasks `1.1`–`4.2` are unblocked and proceed in phase order.
+0 → 1 → 2 → 3 → 4, with the MVP at 2.3. The source issue remains open. Tasks 0.1, 0.2, D.1, D.2, 1.1, and 5.1
+(disposition) are complete: `go.mod` pins `semengine v0.1.0-alpha.2` and `semvocab v0.1.0`, the Go verification gates
+and `internal/harness/contract` structural guards and D.2 upstream probes run in `task verify`, owner consumer-contract
+rulings D.1a–D.1e are recorded in `design.md` and `specs/**`, `irimap` (`Mapper`, `CanonicalNTriplesObject`,
+`BlankNodeID`) and its unit/property/fuzz proving tests run in `task verify` and `task cover:check`, and `AGENTS.md`
+and `.agents/rules-index.md` are reconciled. Remaining runtime tasks `1.2`–`4.2` proceed in phase order.
 
 ## Design readiness
 
@@ -28,7 +29,7 @@ reconciled. Runtime tasks `1.1`–`4.2` are unblocked and proceed in phase order
 
 ## 1. Identity and readers
 
-- [ ] 1.1 Implement exporter-identical irimap and deterministic BlankNodeID after 0.1. Prove
+- [x] 1.1 Implement exporter-identical irimap and deterministic BlankNodeID after 0.1. Prove
   TestIRIMapperRoundTrip, TestPropIRIMapperRoundTrip, TestIRIMapperMatchesExporter and TestBlankNodeIDMultiValued;
   fuzz external IRI/ID parsing. Use 0-based decimal ASCII step-index encoding (`strconv.Itoa(stepIdx)`, D.1e) and
   the canonical N-Triples object contract verified in D.2 `TestProbeCanonicalNTriplesObjectSeam`.

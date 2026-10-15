@@ -25,8 +25,8 @@ replacement, pseudo-version, fork or copy of either dependency is permitted (`Te
 PR #3 changes CI setup-node; PR #4 changes OpenSpec tooling. Neither overlaps these paths or capabilities.
 There is no required merge order with this change; if #4 lands first, revalidate with its new tooling pin.
 Implementation proceeds 0 → 1 → 2 (MVP) → 3 → 4. Task 0.1 (`go.mod`, Go gates, and `internal/harness/contract`
-structural guards) and task 0.2 are complete; each remaining issue task is a reviewable implementation PR.
-Phase 5 is optional and separately decided, never an implicit prerequisite for the initial sidecar.
+structural guards), task 0.2, and task 1.1 (`irimap`) are complete; each remaining issue task is a reviewable
+implementation PR. Phase 5 is optional and separately decided, never an implicit prerequisite for the initial sidecar.
 
 ## Options considered
 
@@ -52,8 +52,8 @@ Phase 5 is optional and separately decided, never an implicit prerequisite for t
 | `server` | GET/POST /sparql, entity JSON-LD, POST /export | SPARQL clients and external SHACL operators |
 | `cmd/semsparql` | Dependency registration, NATS/HTTP composition and lifecycle | Service operators; safe startup requirement |
 
-These are proposed surfaces from issue #1, not existing symbols. Exact Go signatures, CLI flags and config keys
-require consumer-contract review before implementation. There is no additional public API for hypothetical users.
+`irimap` (`Mapper`, `CanonicalNTriplesObject`, `BlankNodeID`) is implemented in task 1.1; the remaining rows are
+proposed surfaces from issue #1. There is no additional public API for hypothetical users.
 
 ## Read-only query execution
 

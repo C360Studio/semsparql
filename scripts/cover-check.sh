@@ -18,7 +18,9 @@ readonly module=github.com/c360studio/semsparql
 # The coverage targets, "<package directory> <profile>", profile one of unit, integration
 # or merged. Runtime packages (irimap, reader, sparql, server, cmd/semsparql) add their
 # lines here as tasks 1.1–4.1 land.
-default_targets=()
+default_targets=(
+  "irimap unit"
+)
 if [ -n "${COVER_TARGETS:-}" ]; then
   targets=()
   while IFS= read -r line; do
@@ -47,11 +49,10 @@ if [ $# -eq 2 ]; then
 else
   mkdir -p coverage
   unit=coverage/unit.coverprofile
+  printf 'mode: atomic\n' >"$unit"
   if [ ${#unit_packages[@]} -gt 0 ]; then
     # Its output is printed: a test that fails here must be named, not discarded.
     go test -count=1 -coverprofile="$unit" "${unit_packages[@]}"
-  else
-    printf 'mode: atomic\n' >"$unit"
   fi
   integration=coverage/integration.coverprofile
   # task test:integration removes coverage/integration.tree before go test and writes the

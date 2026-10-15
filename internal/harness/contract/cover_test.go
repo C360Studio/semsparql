@@ -98,9 +98,11 @@ func TestCoverCheckRefusesAnUnmeasuredTree(t *testing.T) {
 			}
 		})
 	}
+	// The refusal is not unconditional: this tree's fingerprint gets past it. Coverage itself then
+	// fails, since the fake go wrote no unit profile; only the refusal matters here.
 	t.Run("this tree's fingerprint", func(t *testing.T) {
-		if out, err := run(t, &same); err != nil || strings.Contains(out, refusal) {
-			t.Fatalf("refused a profile measured on this tree (err=%v):\n%s", err, out)
+		if out, _ := run(t, &same); strings.Contains(out, refusal) {
+			t.Fatalf("refused a profile measured on this tree:\n%s", out)
 		}
 	})
 }
@@ -123,7 +125,9 @@ func TestCoverCheckThresholdAndMerging(t *testing.T) {
 			t.Fatal(err)
 		}
 		cmd := exec.Command("bash", script, unitFile, intFile)
-		cmd.Env = append(os.Environ(), "COVER_TARGETS="+targets)
+		if targets != "" {
+			cmd.Env = append(os.Environ(), "COVER_TARGETS="+targets)
+		}
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
@@ -131,14 +135,15 @@ func TestCoverCheckThresholdAndMerging(t *testing.T) {
 	eighty := "mode: atomic\n" + mod + "irimap/m.go:1.1,1.9 8 1\n" + mod + "irimap/m.go:2.1,2.9 2 0\n"
 	seventyNine := "mode: atomic\n" + mod + "irimap/m.go:1.1,1.9 79 1\n" + mod + "irimap/m.go:2.1,2.9 21 0\n"
 
-	if out, err := run(t, "irimap unit", eighty, "mode: atomic\n"); err != nil || !strings.Contains(out, "cover: irimap 80.0%") {
-		t.Fatalf("80%% unit profile failed: err=%v\n%s", err, out)
+	// Default target list (no COVER_TARGETS override) enforces irimap unit coverage.
+	if out, err := run(t, "", eighty, "mode: atomic\n"); err != nil || !strings.Contains(out, "cover: irimap 80.0%") {
+		t.Fatalf("default 80%% unit profile failed: err=%v\n%s", err, out)
 	}
-	if out, err := run(t, "irimap unit", seventyNine, "mode: atomic\n"); err == nil || !strings.Contains(out, "irimap 79.0% < 80%") {
-		t.Fatalf("79%% unit profile did not fail: err=%v\n%s", err, out)
+	if out, err := run(t, "", seventyNine, "mode: atomic\n"); err == nil || !strings.Contains(out, "irimap 79.0% < 80%") {
+		t.Fatalf("default 79%% unit profile did not fail: err=%v\n%s", err, out)
 	}
-	if out, err := run(t, "irimap unit", "mode: atomic\n", eighty); err == nil || !strings.Contains(out, "irimap: no statements in the unit profile") {
-		t.Fatalf("missing unit statements did not fail: err=%v\n%s", err, out)
+	if out, err := run(t, "", "mode: atomic\n", eighty); err == nil || !strings.Contains(out, "irimap: no statements in the unit profile") {
+		t.Fatalf("default missing unit statements did not fail: err=%v\n%s", err, out)
 	}
 
 	mergedUnit := "mode: atomic\n" + mod + "reader/r.go:1.1,1.9 4 1\n" + mod + "reader/r.go:2.1,2.9 4 0\n" + mod + "reader/r.go:3.1,3.9 2 0\n"
