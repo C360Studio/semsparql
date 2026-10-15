@@ -29,7 +29,8 @@ The mapper SHALL round-trip canonical entity IRIs and reject other IRIs with Err
 ### Requirement: Stable projection blank nodes
 
 Folding and unfolding SHALL share deterministic blank-node identity based on entity ID, dotted predicate,
-canonical N-Triples object and step index, using issue #1’s NUL-separated SHA-256 formula.
+canonical N-Triples object and 0-based decimal ASCII step index (`strconv.Itoa(stepIdx)`), using issue #1’s
+NUL-separated SHA-256 formula.
 
 #### Scenario: Multi-valued predicate
 
@@ -39,4 +40,5 @@ canonical N-Triples object and step index, using issue #1’s NUL-separated SHA-
 #### Scenario: Canonical term input
 
 - **WHEN** a typed literal or entity reference supplies the hash object
-- **THEN** its RDF-term identity agrees with exporter output; a verified exporter-owned normalization seam is required.
+- **THEN** its RDF-term identity is extracted from the exporter's N-Triples serialization of the source triple and
+  agrees byte-for-byte with exporter output.

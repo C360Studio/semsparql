@@ -30,10 +30,19 @@ query semantics. Responses SHALL negotiate formats appropriate to the query form
 - **WHEN** CONSTRUCT or DESCRIBE requests Turtle, N-Triples or JSON-LD
 - **THEN** the response uses the negotiated RDF format and matching media type, through vocabulary/export.
 
+#### Scenario: DESCRIBE outgoing entity CBD
+
+- **WHEN** a DESCRIBE query targets one or more IRIs (directly or via bound WHERE variables)
+- **THEN** each canonical entity IRI present in GraphReader emits its stored subject triples, virtual rdf:type triples
+  (ClassIRI and registered Superclasses) and unfolded blank-node chains, while absent or non-entity IRIs contribute zero
+  triples without failing the request or scanning incoming references.
+
 #### Scenario: Malformed or incompatible request
 
-- **WHEN** a request has invalid query parameters, malformed syntax or an incompatible requested representation
-- **THEN** it returns an identifiable protocol error rather than a misleading success or wrong format.
+- **WHEN** a request has invalid query parameters or malformed syntax, or requests an Accept representation incompatible
+  with the query form
+- **THEN** invalid parameters or syntax return HTTP 400 and an incompatible Accept representation returns HTTP 406 Not
+  Acceptable rather than a misleading success or wrong format.
 
 ### Requirement: Entity and selected graph export
 
@@ -58,23 +67,28 @@ accept exactly one JSON prefix or CONSTRUCT selector and negotiate Turtle, N-Tri
 
 ### Requirement: Explicit limits and truncation
 
-The service SHALL default to a 10s query timeout, 10,000 maximum results and 100,000 entities read, and
-SHALL bound request bodies and query length. Default limit failures SHALL NOT return successful partial results.
+The service SHALL default to a 10s query timeout, 10,000 maximum results (solution bindings for SELECT, 1 boolean
+result for ASK, and deduplicated output RDF triples for CONSTRUCT, DESCRIBE and POST /export), 100,000 entities read,
+64 KiB maximum SPARQL query length and 256 KiB maximum POST /export body size. Default limit failures SHALL NOT return
+successful partial results.
 
 #### Scenario: Default breach
 
-- **WHEN** a timeout, result cap or scan budget is reached without truncation consent
-- **THEN** the response identifies the breached limit as an error and does not claim a complete result.
+- **WHEN** a result cap or scan budget is reached without truncation consent, or a query timeout expires
+- **THEN** result/scan breaches return HTTP 422 Unprocessable Entity and timeouts return HTTP 504 Gateway Timeout naming
+  the breached limit (`result_limit_exceeded`, `scan_budget_exceeded` or `query_timeout`) without claiming a complete
+  result.
 
 #### Scenario: Explicit truncation
 
-- **WHEN** X-Semsparql-Allow-Truncation: true is present and partial output is returned
-- **THEN** the response unambiguously signals incompleteness; absence of the header never enables truncation.
+- **WHEN** X-Semsparql-Allow-Truncation: true is present and max_results or max_scan_entities is reached
+- **THEN** the buffered response returns HTTP 200 OK with X-Semsparql-Truncated: true and
+  X-Semsparql-Truncation-Reason: result_limit or scan_budget; absence of the request header never enables truncation.
 
 #### Scenario: Oversized input
 
-- **WHEN** body size or query length exceeds its configured maximum
-- **THEN** the request is rejected before partial evaluation can be reported as success.
+- **WHEN** a SPARQL query exceeds 64 KiB or a POST /export body exceeds 256 KiB (or their configured maximums)
+- **THEN** the request is rejected with HTTP 413 Content Too Large before partial evaluation can be reported as success.
 
 ### Requirement: Safe startup and cancellation
 

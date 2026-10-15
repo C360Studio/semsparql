@@ -70,6 +70,7 @@ A successful serializer return SHALL NOT alone be treated as proof of complete o
 
 #### Scenario: Invalid output triple
 
-- **WHEN** a generated triple would be silently omitted by the upstream serializer
-- **THEN** the sidecar refuses successful complete output; the validated refusal seam must be proven before
-  implementation.
+- **WHEN** a generated triple would be silently omitted by the upstream serializer (empty subject/predicate, nil object
+  or NaN/Inf float)
+- **THEN** pre-serialization N-Triples validation detects the empty serializer output and the sidecar fails loudly
+  rather than returning a truncated HTTP 200 graph.

@@ -19,11 +19,14 @@ guards), keeping semantic-web execution outside SemEngine core (ADR-107).
   `TestPinnedDependencies`, `TestNoSleepsInTests`, `TestNoSkippedTests`, `TestNoHiddenTests`,
   `TestCleanupRootsCheckSensitivity`, `TestCoverCheck*`) with paired sensitivity tests, and reconcile `AGENTS.md`
   and `.agents/rules-index.md`.
-- Record unproved exporter and server-capability seams as explicit holds before product runtime packages (`1.1`–`4.2`)
-  begin.
+- Complete D.2 upstream probes (`internal/harness/contract/probes_test.go`) and record owner-approved D.1
+  consumer-contract and protocol rulings (HTTP error/truncation statuses, 64 KiB query / 256 KiB export body byte
+  caps, per-form result counting, standalone `rdfs:subClassOf*` over the registered class closure, outgoing entity
+  CBD `DESCRIBE` scope, 0-based decimal ASCII `stepIdx` in `BlankNodeID`, and formal deferral of optional
+  `KVWatchReader` task `5.1` to a separate change), unblocking runtime tasks `1.1`–`4.2`.
 
 No product runtime packages (`irimap`, `reader`, `sparql`, `server`, `cmd/semsparql`) or current capability specs
-are added yet. Do not archive or promote these capability deltas until the runtime tasks are complete.
+are added yet. Do not archive or promote these capability deltas until the runtime tasks (`1.1`–`4.2`) are complete.
 
 ## Capabilities
 

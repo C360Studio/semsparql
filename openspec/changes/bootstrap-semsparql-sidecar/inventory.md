@@ -176,11 +176,16 @@ Clients should not have to predict result size or scan cost to avoid incomplete 
 4. Resolved at `semvocab@v0.1.0` (`64d3b8bc789c3e178a4cfb92465db4a02b1bd3f6`): `packs.BFOCCOCoreSpec` /
    `packs.RegisterBFOCCOCore` and `diekm.Spec` / `diekm.Register` / `diekm.Shapes` are pinned in `go.mod` and
    verified by `TestPinnedUpstreamSeamsSmoke` in `internal/harness/contract/deps_test.go`.
-5. Standalone subclass paths, DESCRIBE scope, type merging, duplicate handling, truncation signals and error statuses
-   need precise draft contracts (tracked under `D.1`).
+5. Resolved in D.1 (`design.md` and `specs/**`): standalone `rdfs:subClassOf*` evaluates over the registered
+   `ClassIRI` + `Superclasses` closure with reflexive `(C, C)`; `DESCRIBE` emits the outgoing entity CBD + virtual
+   `rdf:type` + unfolded blank-node chains; explicit and virtual types merge as graph sets; solution sequences
+   preserve duplicate multiplicity unless `DISTINCT`; HTTP error statuses use `400`/`406`/`413`/`422`/`504` and
+   opt-in truncation emits `X-Semsparql-Truncated: true` and `X-Semsparql-Truncation-Reason: result_limit|scan_budget`.
 6. Cursor pagination gives no snapshot guarantee. Entity budgets do not bound server key scans.
 7. `vocabulary/entity_type.go:14` has a stale positional comment; use named parser fields instead.
-8. Body/query sizes and authentication details are unspecified in issue #1 (tracked under `D.1`).
+8. Resolved in D.1 (`design.md` and `specs/sparql-protocol/spec.md`): default max SPARQL query length is `64 KiB` and
+   default max `POST /export` body is `256 KiB` (`413 Content Too Large` when exceeded); non-local binds require bearer
+   token or mTLS protection at startup.
 9. Resolved in D.2 (`TestProbeSerializerInvalidTripleOmissionSeam` in `internal/harness/contract/probes_test.go`):
    `vocabulary/export/export.go:77` and `ntriples.go:15–22` silently omit triples with empty `Subject`/`Predicate`,
    `nil` `Object`, or `NaN`/`Inf` floats. Checking each triple via single-triple

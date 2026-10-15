@@ -88,8 +88,11 @@ Type metadata supplies ClassIRI and registered superclass membership. Plain `a` 
 superclasses as issue #1's RDFS entailment policy. Bound type scans use `org.platform.*.domain.type.*`; absent
 org/platform constraints become wildcards. Use server-side Pattern support, with no full-prefix filtering fallback.
 Startup checks ancestor closure when a superclass is itself registered; packs must register all known ancestors.
-Merge explicit and virtual RDF type triples as a graph set. Subclass paths have zero-length identity behavior;
-standalone path evaluation over the registered class graph still needs an exact consumer contract before task 3.1.
+Merge explicit and virtual RDF type triples as a graph set. Per owner ruling D.1c, standalone `?sub rdfs:subClassOf*
+?sup` (not paired with `rdf:type`) evaluates over the finite registered ontology class graph in `vocabulary`
+(`ClassIRI` and `Superclasses` across `ListRegisteredEntityTypes()`): reflexive zero-length `(C, C)` holds for every
+registered class/superclass IRI `C` (and for any bound IRI `C`), and `(sub, sup)` holds whenever `sub == sup` or `sup`
+is in `sub`'s registered `Superclasses`.
 
 Complete projection chains fold only when every declared step, optional class constraint and terminal predicate
 is present. Bind intermediate variables to deterministic blank nodes even when projected. Partial chains, extra
@@ -103,11 +106,13 @@ Blank-node identity follows issue #1:
 _:b_<hex(sha256(entityID NUL predicate NUL canonicalObject NUL stepIdx))[:32]>
 ```
 
-The canonical object is its N-Triples term. D.2 probe `TestProbeCanonicalNTriplesObjectSeam` confirms that calling
-`export.SerializeToString` in `export.NTriples` format with `export.WithBaseIRI(baseIRI)` on a single source triple
-`{Subject: "_:s", Predicate: pred, Object: obj, Datatype: dt}` yields `_:s <predIRI> <canonicalObject> .\n` (where
-`predIRI` contains no `>`), providing an exporter-owned canonical object token without copying RDF classification or
-escaping logic. Different values of one predicate do not collide.
+Per owner ruling D.1e, `stepIdx` is encoded as a 0-based decimal ASCII string (`strconv.Itoa(i)`: `"0"`, `"1"`, `"2"`,
+...) matching `ProjectionSpec.Steps[i]`. The canonical object is its N-Triples term. D.2 probe
+`TestProbeCanonicalNTriplesObjectSeam` confirms that calling `export.SerializeToString` in `export.NTriples` format
+with `export.WithBaseIRI(baseIRI)` on a single source triple `{Subject: "_:s", Predicate: pred, Object: obj,
+Datatype: dt}` yields `_:s <predIRI> <canonicalObject> .\n` (where `predIRI` contains no `>`), providing an
+exporter-owned canonical object token without copying RDF classification or escaping logic. Different values of one
+predicate do not collide.
 
 CONSTRUCT, DESCRIBE and export selection unfold applicable projections and virtual types, then use
 `export.Serialize` for Turtle, N-Triples or JSON-LD. No RDF graph writer is added here.
@@ -119,8 +124,11 @@ whose `Predicate` is a full `ValuePredicateIRI` loses declared `datetime`/`int`/
 semantics across N-Triples, Turtle, and JSON-LD. D.2 probe `TestProbeSerializerInvalidTripleOmissionSeam` confirms that
 checking each triple with single-triple `export.SerializeToString(..., export.NTriples, ...)` detects 100% of triples
 that `export.Serialize` would silently omit (`Subject == ""`, `Predicate == ""`, `Object == nil`, `NaN`/`Inf` floats)
-so the sidecar fails loudly before writing an HTTP 200 response. DESCRIBE selection scope must still be accepted in D.1
-before task 3.3; this draft does not promise an unspecified graph shape.
+so the sidecar fails loudly before writing an HTTP 200 response. Per owner ruling D.1d, `DESCRIBE <iri>` and
+`DESCRIBE ?var` emit the outgoing Concise Bounded Description (CBD) for each bound canonical entity IRI: all stored
+triples where the entity is subject, virtual `rdf:type` triples (`ClassIRI` + registered `Superclasses`), and all
+unfolded reification blank-node chains (`_:b_...` triples). Non-entity IRIs or entity IDs absent from `GraphReader`
+contribute 0 triples (no HTTP 404 on `DESCRIBE`), and no incoming-reference scan is performed.
 
 ## HTTP behavior and operator defaults
 
@@ -132,16 +140,25 @@ GROUP BY, subqueries, VALUES, BIND and arbitrary paths. This is a subset, not fu
 GET query parameters, raw application/sparql-query POST and form POST feed the same parse/evaluate path.
 SELECT/ASK negotiate applicable SPARQL JSON/XML or CSV/TSV result formats; graph forms negotiate Turtle,
 N-Triples or JSON-LD. Format/query-form compatibility is tested; never serialize graphs as result tables.
+Per owner ruling D.1a, an `Accept` header incompatible with the query form returns `406 Not Acceptable`.
 `GET /entities/{entity_id}.jsonld` returns unfolded triples and virtual types, 400 for invalid IDs, 404 for missing.
 `POST /export` accepts exactly one prefix or CONSTRUCT selector and negotiates graph output. No GET export route.
 SHACL runs in an external tool; documentation demonstrates producing a sh:ValidationReport there.
 
-Defaults are 10s per query, 10,000 results and 100,000 entities read. Body and query length are also bounded;
-concrete byte limits, result-count meaning per query form, HTTP error codes and truncation signalling remain
-pre-implementation decisions in task D.1. A query LIMIT is not permission to breach resource limits.
-By default a breached budget produces an identifiable error and no successful partial result. Only explicit
-`X-Semsparql-Allow-Truncation: true` can permit partial output, and the response must identify it as incomplete.
-Oversized or invalid requests never become partially evaluated successes. Test all defaults and boundaries.
+Defaults are 10s per query, 10,000 results and 100,000 entities read. Per owner ruling D.1b, the default maximum
+SPARQL query length (GET `query` parameter or POST body) is `64 KiB` (65,536 bytes) and the default maximum
+`POST /export` JSON selector body is `256 KiB` (262,144 bytes); requests exceeding these caps are rejected with
+`413 Content Too Large`. `max_results` (default 10,000) counts solution bindings for `SELECT` (bounding both output
+rows and the internal pre-`ORDER BY` / pre-`DISTINCT` candidate buffer), 1 boolean result for `ASK`, and deduplicated
+output RDF triples (including virtual `rdf:type` and unfolded blank-node triples) for `CONSTRUCT`, `DESCRIBE`, and
+`POST /export`. A query LIMIT is not permission to breach resource limits.
+Per owner ruling D.1a, by default a breached `max_results` or `max_scan_entities` budget returns
+`422 Unprocessable Entity` and a breached query timeout returns `504 Gateway Timeout`, with an error body naming the
+breached budget (`result_limit_exceeded`, `scan_budget_exceeded`, `query_timeout`) and no partial success. Only
+explicit `X-Semsparql-Allow-Truncation: true` permits partial output when `max_results` or `max_scan_entities` is
+reached, returning a buffered `200 OK` with `X-Semsparql-Truncated: true` and
+`X-Semsparql-Truncation-Reason: result_limit|scan_budget`. Oversized or invalid requests never become partially
+evaluated successes. Test all defaults and boundaries.
 
 Bind localhost by default. Refuse non-local binds without configured bearer-token or mTLS protection.
 Validate configuration, pack ancestor closure and remote pattern capability before readiness. D.2 probe
@@ -158,8 +175,8 @@ shutdown and no detached query workers. Lifecycle tests assert observable comple
 Shared identities are consumed by planner, SELECT bindings, CONSTRUCT and every export endpoint; shared limits
 apply to query and export paths; GraphReader covers all reads. These are in-change adopters, with no existing
 runtime callers to migrate. No additional reusable primitive or cross-repository migration is introduced.
-The optional KV replica needs a separate inventory before selecting an index design; it must declare entity/memory
-ceilings, startup refusal above capacity and last-applied revision freshness, and remain replaceable by graph-index.
+Per owner ruling D.1e, optional Task `5.1` (`KVWatchReader`) is formally deferred to a separate follow-up change after
+Phases 1–4 ship; `bootstrap-semsparql-sidecar` remains stateless (`MemoryReader` and `NATSRPCReader` only).
 
 Virtual fallback and joins can be expensive; no performance claim is made without measurement. Stable ordering
 may need bounded materialization. Budget checks must prevent memory growth from silently exceeding policy.
@@ -170,13 +187,15 @@ failures through protocol errors. Correctness must not depend on reading documen
 
 | Source / decision | Treatment |
 | --- | --- |
-| User: draft from issue #1 + execute task 0.1 & D.2 | Four capability deltas; tasks 0.1, 0.2, and D.2 completed; D.1 holds remain |
+| User: draft from issue #1 + execute 0.1, D.2, and D.1 | Four capability deltas; 0.1, 0.2, D.1, D.2, and 5.1 completed; runtime tasks 1.1–4.2 unblocked |
 | User: semengine v0.1.0-alpha.2 | Pinned in `go.mod` (`11da4721c2233a8e2b5b1d6236a97a44e06abbb6`) |
 | User: semvocab v0.1.0 | Pinned in `go.mod` (`64d3b8bc789c3e178a4cfb92465db4a02b1bd3f6`); pack seams inspected |
 | Existing agent setup merged in PR #2 | Reconciled with Go gates and `internal/harness/contract` structural guards in task 0.1 |
 | Issue #1 datatype recipe vs pin evidence | Resolved in D.2 (`TestProbeTerminalDatatypePropagationSeam`): derive terminal `(Object, Datatype)` from exporter N-Triples rendering of the source triple |
-| Optional KV reader | Separate disposition task (`5.1`), not silently made mandatory |
+| D.1a HTTP error & truncation protocol | 400 invalid/unsupported, 406 incompatible Accept, 413 oversized input, 422 result/scan budget breach, 504 timeout; opt-in truncation emits `X-Semsparql-Truncated: true` and `X-Semsparql-Truncation-Reason: result_limit\|scan_budget` |
+| D.1b Input byte caps & result counting | 64 KiB max SPARQL query, 256 KiB max `/export` body; `max_results` counts bindings for `SELECT` and deduplicated triples for graph forms |
+| D.1c Standalone `rdfs:subClassOf*` | Evaluates over the registered `ClassIRI` + `Superclasses` closure in `vocabulary` with reflexive `(C, C)` |
+| D.1d `DESCRIBE` scope | Outgoing entity CBD + virtual `rdf:type` + unfolded blank-node chains; absent/non-entity IRIs yield 0 triples |
+| D.1e `BlankNodeID` `stepIdx` & optional `5.1` | 0-based decimal ASCII `stepIdx` (`strconv.Itoa(i)`); `KVWatchReader` (`5.1`) deferred to a separate change |
 
-D.2 upstream probes are verified in `internal/harness/contract/probes_test.go`, unblocking tasks `1.1` and `4.1`
-(subject to normal phase ordering). Owner acceptance of D.1 remains visible as explicit task holds on `2.3`, `3.1`,
-`3.3`, and `5.1` in `tasks.md`.
+All D.1 consumer-contract rulings and D.2 upstream probes are complete; runtime tasks `1.1`–`4.2` have no open holds.

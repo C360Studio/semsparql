@@ -61,6 +61,13 @@ entailment, and require complete registered ancestor closure at startup.
 - **WHEN** a query requests an entity’s class or supported superclass path
 - **THEN** metadata supplies ClassIRI and applicable registered ancestors; zero-length path identity is retained.
 
+#### Scenario: Standalone subclass path
+
+- **WHEN** a query evaluates `?sub rdfs:subClassOf* ?sup` without an `rdf:type` prefix
+- **THEN** evaluation runs over the finite registered ontology class graph in `vocabulary` (`ClassIRI` and
+  `Superclasses` across `ListRegisteredEntityTypes()`), matching reflexive `(C, C)` for every registered or bound class
+  IRI `C` and `(sub, sup)` whenever `sup` is in `sub`'s registered `Superclasses`.
+
 #### Scenario: Missing ancestor closure
 
 - **WHEN** a registered superclass has a registered ancestor absent from its child’s closure
