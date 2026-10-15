@@ -38,7 +38,7 @@ updates this row and the `AGENTS.md` gate in the same change.
 | Rule | Canonical home | Enforced by |
 | --- | --- | --- |
 | Entity IDs, patterns and prefixes pass SemEngine's shared validators at entry | developer contract § Semantic identity; reviewer contract § Read-only boundary and query review | review only |
-| Sort and deduplicate a complete result set before a limit; keep tie-breaks | developer contract § Semantic identity | review only; planned: `TestScanPatternReaderParity` (task 4.1) for sorted ID sets across pages |
+| Sort and deduplicate complete entity-ID and RDF-term sets before a limit; SPARQL solutions keep duplicates unless `DISTINCT`/`REDUCED` (SPARQL 1.1 §15.3) and are ordered deterministically before `LIMIT`/`OFFSET` | developer contract § Semantic identity; reviewer contract § Read-only boundary and query review | review only; planned: `TestScanPatternReaderParity` (task 4.1) for sorted ID sets across pages; a duplicate-preserving `UNION` case in the executor tests (task 2.2) |
 | Never report partial replay, index or result state as ready or complete | developer contract § Guarantee and signal contracts | review only |
 | Limits give deterministic errors, no silent truncation unless opted in; `?s ?p ?o` stopped by the scan budget | developer contract § Read-only boundary and query limits; issue #1 §2.6 | review only; planned: `TestQueryLimits` (task 2.2/2.3) |
 | Out-of-scope SPARQL returns a 400 naming the feature | developer and reviewer contracts; issue #1 §2.5 | review only; planned: `TestUnsupportedFeatureErrors` (task 2.3) |

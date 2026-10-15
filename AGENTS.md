@@ -75,7 +75,7 @@ should. A new repo-wide or agent-conduct rule updates both this file and `.agent
 | Gate | Rule | Where |
 | --- | --- | --- |
 | `review` | Entity IDs, patterns and prefixes pass SemEngine's shared validators at entry, before any request | `dev` § Semantic identity; `rev` |
-| `review` | Sort and deduplicate a complete result set before applying a limit; keep established tie-breaks | `dev`, `rev` |
+| `review` | Sort and deduplicate complete entity-ID and RDF-term sets before a limit; SPARQL solutions keep duplicates unless `DISTINCT`/`REDUCED` and are ordered deterministically before `LIMIT`/`OFFSET` | `dev`, `rev` |
 | `review` | Never report partial replay, index or result state as ready or complete | `dev`, `rev` |
 | `review` | Timeout, result cap and scan budget return a deterministic error, never silent partial results, unless the client opts into truncation; unconstrained `?s ?p ?o` is stopped by the scan budget | `dev`, `rev` § Read-only boundary; issue #1 §2.6 |
 | `review` | Out-of-scope SPARQL syntax returns a 400 that names the feature | `dev`, `rev`; issue #1 §2.5 |

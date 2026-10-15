@@ -161,7 +161,9 @@ Runtime implementation and spec promotion stay blocked until the owner explicitl
   languages, each with its own validator and its own meaning for empty.
 - Entity ID to IRI mapping is identical to `semengine/vocabulary/export`, and blank node IDs are deterministic. RDF
   graph output comes from `vocabulary/export`; a graph writer of this repository's own is a finding.
-- A complete result set is sorted and deduplicated before a limit or a sample; established tie-breaks remain.
+- A complete set of entity IDs or RDF terms is sorted and deduplicated before a limit or a sample; established
+  tie-breaks remain. A SPARQL solution sequence keeps its duplicates unless the query says `DISTINCT` or `REDUCED`
+  (SPARQL 1.1 §15.3); dropping them is a finding. It is ordered deterministically before `LIMIT`/`OFFSET`.
 - **Limits are deterministic.** Timeout, result cap, and scan budget each return a deterministic error when hit, never
   silent partial results, unless the client opted into truncation and the response says it was truncated. An
   unconstrained `?s ?p ?o` must be stopped by the scan budget; require the test that shows it.

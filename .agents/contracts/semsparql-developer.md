@@ -127,8 +127,10 @@ Adopted from semengine's identity rules, on the reader side.
   mapped back to IDs) with semengine's shared validators (`ValidateEntityID`, `ValidateEntityIDPattern`,
   `ValidateEntityIDPrefix`); they are three languages, keep them apart. Check a NATS key or filter with semengine's
   `natsclient` validators and reject it before any request, watch, retry or metric runs. Never write a local copy.
-- Sort and deduplicate a complete result set before applying a limit, offset or sample, and keep established
-  tie-breaks. SPARQL `LIMIT`/`OFFSET` without `ORDER BY` still returns a deterministic page.
+- Sort and deduplicate a complete set of entity IDs or RDF terms (a reader page, a type scan, a CONSTRUCT graph)
+  before applying a limit or sample, and keep established tie-breaks. SPARQL solution sequences are different: keep
+  duplicate solutions unless the query says `DISTINCT` or `REDUCED` (SPARQL 1.1 §15.3), and order them
+  deterministically before `LIMIT`/`OFFSET`, so a page without `ORDER BY` is still stable.
 - Never report partial state as ready or complete: a reader is ready only on a complete observation, and a result is
   complete only when every read behind it succeeded.
 - Prove the longest supported key or filter and its exact match set against a real NATS server started by the test.

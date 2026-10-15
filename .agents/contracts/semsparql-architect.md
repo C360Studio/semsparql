@@ -211,8 +211,9 @@ predicted. Ask: **is this asking the caller to predict something the server coul
   promised. Adopted from semengine (its ADR-112).
 - **Validate at entry, fail closed.** Entity IDs, patterns, and prefixes are validated with semengine's shared
   validators where they enter; SPARQL text, IRIs, and HTTP parameters are parsed once at the edge. Sort and dedup
-  before applying a limit. Never report partial state as ready or complete. A degrade is declared in the spec and
-  emits a log line and a metric.
+  entity-ID and RDF-term sets before applying a limit; SPARQL solutions keep duplicates unless `DISTINCT` or
+  `REDUCED`. Never report partial state as ready or complete. A degrade is declared in the spec and emits a log line
+  and a metric.
 - **Extend the model, never build a channel beside it.** A parallel declaration buys a resolution layer whose whole job
   is re-deriving a linkage the model already had. The tell: a design note admitting the linkage rests on a naming
   coincidence.

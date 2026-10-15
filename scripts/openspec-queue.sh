@@ -60,7 +60,11 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --strict) STRICT=1; shift ;;
     --check) CHECK=1; shift ;;
-    --stale-days) STALE_DAYS="${2:-7}"; shift 2 ;;
+    --stale-days)
+      case "${2:-}" in
+        '' | *[!0-9]*) echo "--stale-days needs a whole number of days" >&2; exit 2 ;;
+      esac
+      STALE_DAYS="$2"; shift 2 ;;
     -h|--help) sed -n '2,51p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
