@@ -1,0 +1,44 @@
+version: '3'
+
+# One entrypoint for local verification and CI; both run these same commands.
+# Tool pins live in one place each: Node in .nvmrc, Task in .task-version,
+# OpenSpec and markdownlint in package.json. Go (go.mod) and its gates (fmt,
+# tidy, build, vet, lint, vuln, test:*, cover:check) join with task 0.1 of
+# issue #1.
+
+tasks:
+  default:
+    desc: List tasks
+    cmds:
+      - task --list
+
+  doctor:
+    desc: Report tool versions against their pins; starts no workloads
+    cmds:
+      - scripts/doctor.sh
+
+  merge:check:
+    desc: Fail while a class:flake issue is open that PR <n> does not close, main's rules lack the up-to-date setting, or PR <n> is a code PR, not a draft, without implemented-by and reviewed-by lines naming the agents; -- <n>. Reads GitHub, so not in verify
+    cmds:
+      - scripts/merge-check.sh {{.CLI_ARGS}}
+
+  spec:check:
+    desc: Validate all OpenSpec changes and specs strictly, and fail on a hold written outside every task
+    cmds:
+      - npx --no-install openspec validate --all --strict --no-interactive
+      - scripts/openspec-queue.sh --check
+
+  spec:queue:
+    desc: Show each in-flight OpenSpec change with its holds and blocking conditions
+    cmds:
+      - scripts/openspec-queue.sh
+
+  docs:check:
+    desc: Lint Markdown with markdownlint-cli2
+    cmds:
+      - npx --no-install markdownlint-cli2 "**/*.md"
+
+  verify:
+    desc: Run every gate cheapest first with per-step timings; fail if tracked files change
+    cmds:
+      - scripts/verify.sh

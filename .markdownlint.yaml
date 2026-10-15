@@ -1,0 +1,58 @@
+# Markdownlint configuration for SemSparql
+# See: https://github.com/DavidAnson/markdownlint/blob/main/doc/Rules.md
+
+# Default: all rules enabled
+default: true
+
+# MD013: Line length
+# Relaxed for technical documentation with tables and code blocks
+MD013:
+  line_length: 120
+  heading_line_length: 80
+  code_blocks: false # Don't enforce line length in code blocks
+  tables: false # Don't enforce line length in tables
+
+# MD024: Multiple headings with the same content
+# Allow duplicate headings in different sections (e.g., "Summary" in each section)
+MD024:
+  siblings_only: true # Only flag duplicates at the same level under same parent
+
+# MD033: Inline HTML
+# Allow HTML for things markdown can't do (e.g., details/summary)
+MD033:
+  allowed_elements:
+    - details
+    - summary
+    - br
+
+# MD040: Fenced code blocks should have a language specified
+# Keep enabled - helps with syntax highlighting
+MD040: true
+
+# MD041: First line in file should be a top-level heading
+# Keep enabled - good practice for documentation
+MD041: true
+
+# MD060: Table column style
+# Disable - too strict for practical use, tables are readable without exact spacing
+MD060: false
+
+# MD046: Code block style
+# Prefer fenced (```) over indented
+MD046:
+  style: fenced
+
+# MD048: Code fence style
+# Prefer backticks over tildes
+MD048:
+  style: backtick
+
+# MD049: Emphasis style
+# Prefer asterisks for consistency
+MD049:
+  style: asterisk
+
+# MD050: Strong style
+# Prefer asterisks for consistency
+MD050:
+  style: asterisk

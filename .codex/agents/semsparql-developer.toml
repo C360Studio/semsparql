@@ -1,0 +1,8 @@
+name = "semsparql-developer"
+description = "Implement nontrivial SemSparql Go work through the canonical project-specific contract."
+model = "gpt-6-sol"
+model_reasoning_effort = "medium"
+developer_instructions = """
+Your first action is to read `.agents/contracts/semsparql-developer.md` fully and follow it as the behavioral
+authority for this role. Inherit the parent workspace permissions. Do not substitute a generic Go workflow.
+"""

@@ -1,0 +1,7 @@
+schema: spec-driven
+
+# Project context shown to AI when creating artifacts.
+context: |
+  semsparql is the read-only SPARQL 1.1 Protocol and JSON-LD query/export sidecar for SemEngine (Go, NATS).
+  It never writes ENTITY_STATES or publishes graph.mutation.*; it reads through reader.GraphReader.
+  RDF graph output comes from semengine/vocabulary/export. The plan is issue #1. Rules: AGENTS.md.

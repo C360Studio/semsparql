@@ -1,0 +1,25 @@
+# Go
+*.exe
+*.test
+*.out
+vendor/
+go.work
+go.work.sum
+
+# Coverage and benchmark artifacts
+coverage/
+coverage.*
+*.coverprofile
+*.prof
+
+# Node
+node_modules
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+.worktrees/
+.enjoy-logs/
