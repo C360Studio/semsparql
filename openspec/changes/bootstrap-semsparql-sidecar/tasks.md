@@ -1,10 +1,10 @@
 # Bootstrap tasks
 
 These are the implementation tasks from issue #1. Each numbered issue task is one reviewable PR. Dependencies run
-0 → 1 → 2 → 3 → 4, with the MVP at 2.3. The source issue remains open. Tasks 0.1 and 0.2 are complete: `go.mod` pins
-`semengine v0.1.0-alpha.2` and `semvocab v0.1.0`, the Go verification gates and `internal/harness/contract` structural
-guards run in `task verify`, and `AGENTS.md` and `.agents/rules-index.md` are reconciled. Product runtime tasks
-(`1.1`–`4.2`) remain gated on D.1 and D.2.
+0 → 1 → 2 → 3 → 4, with the MVP at 2.3. The source issue remains open. Tasks 0.1, 0.2, and D.2 are complete: `go.mod`
+pins `semengine v0.1.0-alpha.2` and `semvocab v0.1.0`, the Go verification gates and `internal/harness/contract`
+structural guards and D.2 upstream probes run in `task verify`, and `AGENTS.md` and `.agents/rules-index.md` are
+reconciled. Tasks `2.3`, `3.1`, `3.3`, and `5.1` remain gated on D.1 owner consumer-contract decisions.
 
 ## Design readiness
 
@@ -12,9 +12,11 @@ guards run in `task verify`, and `AGENTS.md` and `.agents/rules-index.md` are re
   per-form result counting and format compatibility, standalone subclass-path semantics and DESCRIBE scope.
   Record owner decisions and add corresponding scenarios before implementing those surfaces.
   Hold: owner design acceptance and consumer-contract decisions; drafting is not implementation approval.
-- [ ] D.2 Recheck upstream tagged APIs/probes and record any missing exporter or capability-detection seam;
+- [x] D.2 Recheck upstream tagged APIs/probes and record any missing exporter or capability-detection seam;
   file confirmed upstream gaps and attach their issue/release references to the dependent tasks.
-  Hold: pinned probes and any required upstream release; no local exporter/query workaround.
+  Verified in `internal/harness/contract/probes_test.go` (`TestProbeCanonicalNTriplesObjectSeam`,
+  `TestProbeTerminalDatatypePropagationSeam`, `TestProbeSerializerInvalidTripleOmissionSeam`,
+  `TestProbeServerPatternCapabilitySeam`); no new upstream release is required.
 
 ## 0. Bootstrap
 
@@ -28,8 +30,8 @@ guards run in `task verify`, and `AGENTS.md` and `.agents/rules-index.md` are re
 
 - [ ] 1.1 Implement exporter-identical irimap and deterministic BlankNodeID after 0.1. Prove
   TestIRIMapperRoundTrip, TestPropIRIMapperRoundTrip, TestIRIMapperMatchesExporter and TestBlankNodeIDMultiValued;
-  fuzz external IRI/ID parsing. Define the exact step-index encoding and canonical N-Triples object contract.
-  Hold: D.2 must verify exporter-owned canonical-object normalization; no copied RDF formatter.
+  fuzz external IRI/ID parsing. Define the exact step-index encoding and canonical N-Triples object contract
+  (verified in D.2 `TestProbeCanonicalNTriplesObjectSeam`).
 - [ ] 1.2 Add GraphReader and MemoryReader with GetEntity, GetBatch, ScanPrefix, ScanPattern and
   EntitiesByPredicate. Use shared validators/MatchEntityIDPattern. Test empty-sentinel distinction, invalid input,
   missing entities, deterministic ID sets and budget-aware scans, with no silently incomplete success.
@@ -61,16 +63,15 @@ guards run in `task verify`, and `AGENTS.md` and `.agents/rules-index.md` are re
   external SHACL guide. Prove TestConstructUnfoldsReifiedGraphForSHACL and TestUnfoldTerminalDatatypePropagation
   across Turtle/N-Triples/JSON-LD; extend protocol tests to graph formats, invalid/missing IDs and selection bodies.
   Validate complete output, including absence of silently dropped invalid triples, using an independent RDF parser.
-  Hold: D.1 DESCRIBE contract and D.2 terminal datatype/canonical-object/serializer-omission probes; if a seam is
-  missing, await its upstream issue and released fix rather than changing the requested pin silently.
+  Hold: D.1 must settle the DESCRIBE selection contract before this implementation.
 
 ## 4. Live sidecar
 
 - [ ] 4.1 Add NATSRPCReader and cmd/semsparql using declared entity/batch/prefix verbs and classified RPC.
   Prove TestScanPatternReaderParity against real NATS and graph-ingest, across opaque cursor pages and wildcard
   systems; test missing batches, errors, cancellation, short pages with continuation, shutdown and no writes.
-  Prove startup refuses an incompatible server without a full-prefix filtering fallback.
-  Hold: D.2 must establish a usable server pattern-capability check; client-library pinning alone is insufficient.
+  Prove startup refuses an incompatible server without a full-prefix filtering fallback (using the D.2
+  `TestProbeServerPatternCapabilitySeam` check).
 - [ ] 4.2 Run end-to-end tests using the released SemVocab DIEKM pack and a live NATS/graph-ingest fixture,
   covering the complete issue #1 proving-test set. Record Rapid seeds/check counts, fuzz exploration vs replay,
   independent oracles and failing regression/mutation evidence. Run all implemented gates through task verify.

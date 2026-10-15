@@ -103,16 +103,24 @@ Blank-node identity follows issue #1:
 _:b_<hex(sha256(entityID NUL predicate NUL canonicalObject NUL stepIdx))[:32]>
 ```
 
-The canonical object is its N-Triples term. Stable step-index encoding and the exporter-owned normalization seam
-must be fixed by task 1.1 evidence before implementation. Different values of one predicate must not collide.
+The canonical object is its N-Triples term. D.2 probe `TestProbeCanonicalNTriplesObjectSeam` confirms that calling
+`export.SerializeToString` in `export.NTriples` format with `export.WithBaseIRI(baseIRI)` on a single source triple
+`{Subject: "_:s", Predicate: pred, Object: obj, Datatype: dt}` yields `_:s <predIRI> <canonicalObject> .\n` (where
+`predIRI` contains no `>`), providing an exporter-owned canonical object token without copying RDF classification or
+escaping logic. Different values of one predicate do not collide.
 
 CONSTRUCT, DESCRIBE and export selection unfold applicable projections and virtual types, then use
 `export.Serialize` for Turtle, N-Triples or JSON-LD. No RDF graph writer is added here.
-Preserve the terminal RDF datatype/resource meaning. Issue #1's suggestion to blindly copy DataType is not proven
-at this tag: pragmatic `datetime`/`entity_id` metadata differs from explicit RDF datatypes and `@id`.
-Probe that seam, the canonical object seam, and invalid-triple omission before claiming complete output.
-If upstream has no usable seam, file the gap there and await a release; do not create local conversion machinery.
-DESCRIBE selection scope must be accepted before task 3.3; this draft does not promise an unspecified graph shape.
+Preserve the terminal RDF datatype/resource meaning. D.2 probe `TestProbeTerminalDatatypePropagationSeam` proves
+that blindly copying pragmatic `vocabulary.PredicateMetadata.DataType` (`"float"`, `"datetime"`, `"entity_id"`) into
+`Triple.Datatype` emits invalid RDF (`^^<float>`), and leaving `Triple.Datatype` empty on an unfolded terminal triple
+whose `Predicate` is a full `ValuePredicateIRI` loses declared `datetime`/`int`/`json` types. Normalizing the terminal
+`(Object, Datatype)` from the exporter's own N-Triples classification of the source triple preserves exact RDF object
+semantics across N-Triples, Turtle, and JSON-LD. D.2 probe `TestProbeSerializerInvalidTripleOmissionSeam` confirms that
+checking each triple with single-triple `export.SerializeToString(..., export.NTriples, ...)` detects 100% of triples
+that `export.Serialize` would silently omit (`Subject == ""`, `Predicate == ""`, `Object == nil`, `NaN`/`Inf` floats)
+so the sidecar fails loudly before writing an HTTP 200 response. DESCRIBE selection scope must still be accepted in D.1
+before task 3.3; this draft does not promise an unspecified graph shape.
 
 ## HTTP behavior and operator defaults
 
@@ -136,8 +144,12 @@ By default a breached budget produces an identifiable error and no successful pa
 Oversized or invalid requests never become partially evaluated successes. Test all defaults and boundaries.
 
 Bind localhost by default. Refuse non-local binds without configured bearer-token or mTLS protection.
-Validate configuration, pack ancestor closure and remote pattern capability before readiness. The library pin
-alone is not server-version evidence; startup detection remains an explicit task 4.1 design/probe requirement.
+Validate configuration, pack ancestor closure and remote pattern capability before readiness. D.2 probe
+`TestProbeServerPatternCapabilitySeam` verifies that sending `PrefixQueryRequest{Pattern: "invalid", Limit: 1}` over
+`graph.ingest.query.prefix` returns classified `errs.ErrorInvalid` (`semtypes.ErrorCodeEntityIDPatternInvalid`) with
+zero bucket I/O on a pattern-capable server, whereas a legacy pre-#259 server ignores the unknown `"pattern"` field
+and returns `err == nil`. Pairing that negative probe with `PrefixQueryRequest{Pattern: "*.*.*.*.*.*", Limit: 1}`
+establishes server `Pattern` capability at startup without a full-prefix filtering fallback.
 Contexts enter operations as arguments; root context belongs to main. Cancellation must stop work, with bounded
 shutdown and no detached query workers. Lifecycle tests assert observable completion, not a chosen lock design.
 
@@ -158,12 +170,13 @@ failures through protocol errors. Correctness must not depend on reading documen
 
 | Source / decision | Treatment |
 | --- | --- |
-| User: draft from issue #1 + execute task 0.1 | Four capability deltas, tasks 0.1–0.2 completed, runtime tasks 1.1–5.1 held |
+| User: draft from issue #1 + execute task 0.1 & D.2 | Four capability deltas; tasks 0.1, 0.2, and D.2 completed; D.1 holds remain |
 | User: semengine v0.1.0-alpha.2 | Pinned in `go.mod` (`11da4721c2233a8e2b5b1d6236a97a44e06abbb6`) |
 | User: semvocab v0.1.0 | Pinned in `go.mod` (`64d3b8bc789c3e178a4cfb92465db4a02b1bd3f6`); pack seams inspected |
 | Existing agent setup merged in PR #2 | Reconciled with Go gates and `internal/harness/contract` structural guards in task 0.1 |
-| Issue #1 datatype recipe vs pin evidence | Desired RDF meaning retained; algorithm unapproved until probe resolves mismatch |
-| Optional KV reader | Separate disposition task, not silently made mandatory |
+| Issue #1 datatype recipe vs pin evidence | Resolved in D.2 (`TestProbeTerminalDatatypePropagationSeam`): derive terminal `(Object, Datatype)` from exporter N-Triples rendering of the source triple |
+| Optional KV reader | Separate disposition task (`5.1`), not silently made mandatory |
 
-Owner acceptance of D.1 and completion of D.2 probes are still needed before their dependent runtime tasks (`1.1`–`4.2`).
-Export and startup capability evidence holds remain independently visible in `tasks.md`.
+D.2 upstream probes are verified in `internal/harness/contract/probes_test.go`, unblocking tasks `1.1` and `4.1`
+(subject to normal phase ordering). Owner acceptance of D.1 remains visible as explicit task holds on `2.3`, `3.1`,
+`3.3`, and `5.1` in `tasks.md`.

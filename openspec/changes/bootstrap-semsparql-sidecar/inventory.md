@@ -153,24 +153,38 @@ Clients should not have to predict result size or scan cost to avoid incomplete 
 
 ## Open evidence questions
 
-1. Terminal datatype: `vocabulary/predicates.go:161` declares `DataTypeEntityID = "entity_id"`;
-   `:171` declares `DataTypeDateTime = "datetime"`. Exporter `object.go:125` handles explicit triple datatype,
-   while `:158` handles pragmatic declarations. Issue #1's blind copy / `"iri"` recipe is unproved at this pin.
-   Explicit `xsd:dateTime` and pragmatic `datetime` must not be conflated. Probe exporter-owned conversion;
-   no new runtime defect is claimed as proven.
-2. Canonical object: `vocabulary/export/ntriples.go:46`, `formatNTriplesObject`, is unexported.
-   The reuse path for the blank-node hash input is unproved.
-3. A client library pin does not establish the running server version. Missing-pattern startup detection is unproved.
+1. Resolved in D.2 (`TestProbeTerminalDatatypePropagationSeam` in `internal/harness/contract/probes_test.go`):
+   `vocabulary/predicates.go:161` declares `DataTypeEntityID = "entity_id"`; `:171` declares
+   `DataTypeDateTime = "datetime"`. Exporter `object.go:125` handles explicit `Triple.Datatype`, while `:158` handles
+   pragmatic declarations on registered dotted predicates. Blindly copying pragmatic `DataType` into `Triple.Datatype`
+   emits invalid RDF (e.g. `^^<float>`), and leaving `Triple.Datatype` empty on an unfolded terminal triple whose
+   `Predicate` is a full `ValuePredicateIRI` loses declared `datetime`/`int`/`json` types. Normalizing the terminal
+   `(Object, Datatype)` from the exporter's own N-Triples rendering of the source triple preserves exact RDF object
+   semantics across N-Triples, Turtle, and JSON-LD without upstream changes.
+2. Resolved in D.2 (`TestProbeCanonicalNTriplesObjectSeam` in `internal/harness/contract/probes_test.go`): although
+   `vocabulary/export/ntriples.go:46` (`formatNTriplesObject`) is unexported, calling `export.SerializeToString` in
+   `export.NTriples` format with `export.WithBaseIRI(baseIRI)` on a single triple `{Subject: "_:s", Predicate: pred,
+   Object: obj, Datatype: dt}` emits `_:s <predIRI> <canonicalNTriplesObject> .\n` (where `predIRI` contains no `>`),
+   yielding the exact exporter-owned canonical N-Triples object token for `BlankNodeID` without copying RDF formatter
+   logic.
+3. Resolved in D.2 (`TestProbeServerPatternCapabilitySeam` in `internal/harness/contract/probes_test.go`): sending
+   `PrefixQueryRequest{Pattern: "invalid", Limit: 1}` to `graph.ingest.query.prefix` returns classified
+   `errs.ErrorInvalid` (`semtypes.ErrorCodeEntityIDPatternInvalid`) with zero bucket I/O on a pattern-capable server
+   (`processor/graph-ingest/query.go:262–265`), whereas a pre-#259 server without `PrefixQueryRequest.Pattern` ignores
+   the unknown JSON field and treats it as an empty-prefix query (`err == nil`). Combining that negative probe with
+   `PrefixQueryRequest{Pattern: "*.*.*.*.*.*", Limit: 1}` establishes server `Pattern` capability at startup.
 4. Resolved at `semvocab@v0.1.0` (`64d3b8bc789c3e178a4cfb92465db4a02b1bd3f6`): `packs.BFOCCOCoreSpec` /
    `packs.RegisterBFOCCOCore` and `diekm.Spec` / `diekm.Register` / `diekm.Shapes` are pinned in `go.mod` and
    verified by `TestPinnedUpstreamSeamsSmoke` in `internal/harness/contract/deps_test.go`.
 5. Standalone subclass paths, DESCRIBE scope, type merging, duplicate handling, truncation signals and error statuses
-   need precise draft contracts.
+   need precise draft contracts (tracked under `D.1`).
 6. Cursor pagination gives no snapshot guarantee. Entity budgets do not bound server key scans.
 7. `vocabulary/entity_type.go:14` has a stale positional comment; use named parser fields instead.
-8. Body/query sizes and authentication details are unspecified in issue #1.
-9. Serializer completeness: `vocabulary/export/export.go:77` documents silent omission of invalid triples;
-   `ntriples.go:15–22` skips empty subjects/predicates or invalid objects; `export_test.go:134`,
-   `TestSerialize_SkipsInvalidTriples`, covers this. A successful serializer call alone does not prove that every
-   intended triple was rendered. The sidecar loud-failure seam needs validation/probing before implementation.
-10. Task 0.1 contract tests are executed via `task verify`; runtime sidecar packages (Phases 1–4) remain planned.
+8. Body/query sizes and authentication details are unspecified in issue #1 (tracked under `D.1`).
+9. Resolved in D.2 (`TestProbeSerializerInvalidTripleOmissionSeam` in `internal/harness/contract/probes_test.go`):
+   `vocabulary/export/export.go:77` and `ntriples.go:15–22` silently omit triples with empty `Subject`/`Predicate`,
+   `nil` `Object`, or `NaN`/`Inf` floats. Checking each triple via single-triple
+   `export.SerializeToString(..., export.NTriples, export.WithBaseIRI(baseIRI))` returns `""` for every omitted triple,
+   giving the sidecar an exporter-owned loud-failure check before writing HTTP responses.
+10. Task 0.1 contract tests and D.2 upstream probe tests (`internal/harness/contract`) run in `task verify`; runtime
+    sidecar packages (Phases 1–4) remain planned.
