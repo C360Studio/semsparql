@@ -15,6 +15,7 @@ import (
 	"github.com/c360studio/semengine/graph"
 	"github.com/c360studio/semengine/message"
 	"github.com/c360studio/semengine/pkg/errs"
+	"github.com/c360studio/semengine/vocabulary"
 	"github.com/c360studio/semengine/vocabulary/export"
 	"github.com/c360studio/semsparql/irimap"
 	"github.com/c360studio/semsparql/reader"
@@ -221,6 +222,7 @@ func (e *Executor) Execute(ctx context.Context, q *Query, opts ...EvalOption) (*
 		allowTruncation: allowTruncation,
 		org:             org,
 		platform:        platform,
+		unfoldedBySubj:  make(map[Term][]rdfTriple),
 	}
 
 	if err := state.checkContext(); err != nil {
@@ -249,6 +251,7 @@ type execState struct {
 	truncationReason string
 	org              string
 	platform         string
+	unfoldedBySubj   map[Term][]rdfTriple
 }
 
 func (s *execState) markTruncated(reason string) {
@@ -440,25 +443,37 @@ func addTermVar(t Term, vars *[]string, seen map[string]bool) {
 	}
 }
 
-func (s *execState) evalGroup(g GroupPattern, current []Solution) ([]Solution, error) {
+func (s *execState) evalGroup(g GroupPattern, current []Solution, outerDisallowed ...map[string]bool) ([]Solution, error) {
+	baseDisallowed := mergeBoolMaps(outerDisallowed...)
+	for _, f := range g.Filters {
+		collectFilterExprVars(f, baseDisallowed)
+	}
+
 	solutions := current
-	for _, el := range g.Elements {
+	for idx, el := range g.Elements {
 		if err := s.checkContext(); err != nil {
 			return nil, err
 		}
 		if len(solutions) == 0 {
 			break
 		}
+		elDisallowed := mergeBoolMaps(baseDisallowed)
+		for j, sib := range g.Elements {
+			if j != idx {
+				collectElementBindingKeys(sib, elDisallowed)
+			}
+		}
+
 		var err error
 		switch p := el.(type) {
 		case BGPPattern:
-			solutions, err = s.evalBGP(p, solutions)
+			solutions, err = s.evalBGP(p, solutions, elDisallowed)
 		case SubGroupPattern:
-			solutions, err = s.evalGroup(p.Group, solutions)
+			solutions, err = s.evalGroup(p.Group, solutions, elDisallowed)
 		case OptionalPattern:
-			solutions, err = s.evalOptional(p, solutions)
+			solutions, err = s.evalOptional(p, solutions, elDisallowed)
 		case UnionPattern:
-			solutions, err = s.evalUnion(p, solutions)
+			solutions, err = s.evalUnion(p, solutions, elDisallowed)
 		}
 		if err != nil {
 			return nil, err
@@ -478,13 +493,77 @@ func (s *execState) evalGroup(g GroupPattern, current []Solution) ([]Solution, e
 	return filtered, nil
 }
 
-func (s *execState) evalOptional(opt OptionalPattern, current []Solution) ([]Solution, error) {
+func mergeBoolMaps(maps ...map[string]bool) map[string]bool {
+	out := make(map[string]bool)
+	for _, m := range maps {
+		for k, v := range m {
+			if v {
+				out[k] = true
+			}
+		}
+	}
+	return out
+}
+
+func collectGroupBindingKeys(g GroupPattern, dst map[string]bool) {
+	for _, f := range g.Filters {
+		collectFilterExprVars(f, dst)
+	}
+	for _, el := range g.Elements {
+		collectElementBindingKeys(el, dst)
+	}
+}
+
+func collectElementBindingKeys(el PatternElement, dst map[string]bool) {
+	switch p := el.(type) {
+	case BGPPattern:
+		for _, tp := range p.Triples {
+			if k, ok := bindingKey(tp.Subject); ok {
+				dst[k] = true
+			}
+			if k, ok := bindingKey(tp.Predicate); ok {
+				dst[k] = true
+			}
+			if k, ok := bindingKey(tp.Object); ok {
+				dst[k] = true
+			}
+		}
+	case OptionalPattern:
+		collectGroupBindingKeys(p.Group, dst)
+	case UnionPattern:
+		for _, b := range p.Branches {
+			collectGroupBindingKeys(b, dst)
+		}
+	case SubGroupPattern:
+		collectGroupBindingKeys(p.Group, dst)
+	}
+}
+
+func collectFilterExprVars(expr FilterExpr, dst map[string]bool) {
+	switch e := expr.(type) {
+	case TermExpr:
+		if k, ok := bindingKey(e.Term); ok {
+			dst[k] = true
+		}
+	case UnaryExpr:
+		collectFilterExprVars(e.Operand, dst)
+	case BinaryExpr:
+		collectFilterExprVars(e.Left, dst)
+		collectFilterExprVars(e.Right, dst)
+	case CallExpr:
+		for _, arg := range e.Args {
+			collectFilterExprVars(arg, dst)
+		}
+	}
+}
+
+func (s *execState) evalOptional(opt OptionalPattern, current []Solution, outerDisallowed map[string]bool) ([]Solution, error) {
 	out := make([]Solution, 0, len(current))
 	for _, sol := range current {
 		if err := s.checkContext(); err != nil {
 			return nil, err
 		}
-		ext, err := s.evalGroup(opt.Group, []Solution{sol.Clone()})
+		ext, err := s.evalGroup(opt.Group, []Solution{sol.Clone()}, outerDisallowed)
 		if err != nil {
 			return nil, err
 		}
@@ -516,7 +595,7 @@ func (s *execState) evalOptional(opt OptionalPattern, current []Solution) ([]Sol
 	return out, nil
 }
 
-func (s *execState) evalUnion(u UnionPattern, current []Solution) ([]Solution, error) {
+func (s *execState) evalUnion(u UnionPattern, current []Solution, outerDisallowed map[string]bool) ([]Solution, error) {
 	out := make([]Solution, 0)
 	for _, branch := range u.Branches {
 		if err := s.checkContext(); err != nil {
@@ -526,7 +605,7 @@ func (s *execState) evalUnion(u UnionPattern, current []Solution) ([]Solution, e
 		for i := range current {
 			seed[i] = current[i].Clone()
 		}
-		branchSols, err := s.evalGroup(branch, seed)
+		branchSols, err := s.evalGroup(branch, seed, outerDisallowed)
 		if err != nil {
 			return nil, err
 		}
@@ -554,7 +633,13 @@ type rdfTriple struct {
 	Object    Term
 }
 
-func (s *execState) evalBGP(bgp BGPPattern, current []Solution) ([]Solution, error) {
+type bgpExecItem struct {
+	isChain bool
+	chain   FoldedChain
+	triple  TriplePattern
+}
+
+func (s *execState) evalBGP(bgp BGPPattern, current []Solution, outerDisallowed map[string]bool) ([]Solution, error) {
 	if len(bgp.Triples) == 0 || len(current) == 0 {
 		return current, nil
 	}
@@ -567,19 +652,37 @@ func (s *execState) evalBGP(bgp BGPPattern, current []Solution) ([]Solution, err
 		}
 	}
 
-	remaining := slices.Clone(bgp.Triples)
-	solutions := current
+	disallowed := mergeBoolMaps(outerDisallowed)
+	for _, sol := range current {
+		for k := range sol {
+			disallowed[k] = true
+		}
+	}
 
-	for len(remaining) > 0 && len(solutions) > 0 {
+	folded := FoldProjections(bgp, disallowed)
+	items := make([]bgpExecItem, 0, len(folded.Chains)+len(folded.RemainingTriples))
+	for _, ch := range folded.Chains {
+		items = append(items, bgpExecItem{isChain: true, chain: ch})
+	}
+	for _, tp := range folded.RemainingTriples {
+		items = append(items, bgpExecItem{triple: tp})
+	}
+
+	solutions := current
+	for len(items) > 0 && len(solutions) > 0 {
 		if err := s.checkContext(); err != nil {
 			return nil, err
 		}
-		bestIdx := pickNextPatternIndex(remaining, solutions, s.mapper, s.org, s.platform)
-		tp := remaining[bestIdx]
-		remaining = slices.Delete(remaining, bestIdx, bestIdx+1)
+		bestIdx := pickNextBGPItemIndex(items, solutions, s.mapper, s.org, s.platform)
+		item := items[bestIdx]
+		items = slices.Delete(items, bestIdx, bestIdx+1)
 
 		var err error
-		solutions, err = s.evalTriplePattern(tp, solutions)
+		if item.isChain {
+			solutions, err = s.evalFoldedChain(item.chain, solutions)
+		} else {
+			solutions, err = s.evalTriplePattern(item.triple, solutions)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -588,17 +691,38 @@ func (s *execState) evalBGP(bgp BGPPattern, current []Solution) ([]Solution, err
 	return solutions, nil
 }
 
-func pickNextPatternIndex(remaining []TriplePattern, solutions []Solution, mapper *irimap.Mapper, org, platform string) int {
+func pickNextBGPItemIndex(items []bgpExecItem, solutions []Solution, mapper *irimap.Mapper, org, platform string) int {
 	bestIdx := 0
-	bestRank := dynamicPatternRank(remaining[0], solutions, mapper, org, platform)
-	for i := 1; i < len(remaining); i++ {
-		r := dynamicPatternRank(remaining[i], solutions, mapper, org, platform)
+	bestRank := dynamicBGPItemRank(items[0], solutions, mapper, org, platform)
+	for i := 1; i < len(items); i++ {
+		r := dynamicBGPItemRank(items[i], solutions, mapper, org, platform)
 		if r < bestRank {
 			bestIdx = i
 			bestRank = r
 		}
 	}
 	return bestIdx
+}
+
+func dynamicBGPItemRank(item bgpExecItem, solutions []Solution, mapper *irimap.Mapper, org, platform string) int {
+	if item.isChain {
+		return dynamicFoldedChainRank(item.chain, solutions, mapper)
+	}
+	return dynamicPatternRank(item.triple, solutions, mapper, org, platform)
+}
+
+func dynamicFoldedChainRank(ch FoldedChain, solutions []Solution, mapper *irimap.Mapper) int {
+	step := classifySingleFoldedChain(ch, mapper)
+	if step.Kind == AccessEmpty {
+		return 0
+	}
+	if step.Kind <= AccessExactEntity {
+		return int(step.Kind) * 10
+	}
+	if allSubjectsBound(ch.Subject, solutions) {
+		return int(AccessExactEntity)*10 + 5
+	}
+	return int(step.Kind) * 10
 }
 
 func dynamicPatternRank(tp TriplePattern, solutions []Solution, mapper *irimap.Mapper, org, platform string) int {
@@ -654,6 +778,170 @@ func allObjectsBoundToIRIs(obj Term, solutions []Solution) bool {
 	return true
 }
 
+type foldedChainMatch struct {
+	Subject       Term
+	Intermediates []Term
+	Object        Term
+}
+
+func (s *execState) evalFoldedChain(ch FoldedChain, solutions []Solution) ([]Solution, error) {
+	if len(ch.Predicates) == 0 || ch.Subject.Kind == TermLiteral {
+		return nil, nil
+	}
+
+	boundSubj := allSubjectsBound(ch.Subject, solutions)
+	var (
+		entities []graph.EntityState
+		err      error
+	)
+	if boundSubj {
+		idSet := make(map[string]struct{}, len(solutions))
+		entityIDs := make([]string, 0, len(solutions))
+		for _, sol := range solutions {
+			subj := resolveTerm(ch.Subject, sol)
+			if subj.Kind != TermIRI {
+				continue
+			}
+			eid, err := s.mapper.IRIToEntityID(subj.Value)
+			if err != nil {
+				continue
+			}
+			if _, seen := idSet[eid]; !seen {
+				idSet[eid] = struct{}{}
+				entityIDs = append(entityIDs, eid)
+			}
+		}
+		if len(entityIDs) == 0 {
+			return nil, nil
+		}
+		entities, err = s.readEntitiesByIDs(entityIDs)
+	} else {
+		entities, err = s.readEntitiesByPredicates(ch.Predicates)
+	}
+	if err != nil || len(entities) == 0 {
+		return nil, err
+	}
+
+	var allMatches []foldedChainMatch
+	matchesBySubj := make(map[Term][]foldedChainMatch, len(entities))
+	for i := range entities {
+		ms, err := s.extractFoldedChainMatches(&entities[i], ch)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range ms {
+			matchesBySubj[m.Subject] = append(matchesBySubj[m.Subject], m)
+		}
+		allMatches = append(allMatches, ms...)
+	}
+
+	next := make([]Solution, 0)
+	for _, sol := range solutions {
+		var candidates []foldedChainMatch
+		if boundSubj {
+			subj := resolveTerm(ch.Subject, sol)
+			candidates = matchesBySubj[subj]
+		} else {
+			candidates = allMatches
+		}
+		var stopped bool
+		for _, m := range candidates {
+			ext, ok := matchFoldedChain(ch, m, sol)
+			if !ok {
+				continue
+			}
+			stop, err := s.appendSolution(&next, ext)
+			if err != nil {
+				return nil, err
+			}
+			if stop {
+				stopped = true
+				break
+			}
+		}
+		if stopped {
+			break
+		}
+	}
+	return next, nil
+}
+
+func (s *execState) extractFoldedChainMatches(entity *graph.EntityState, ch FoldedChain) ([]foldedChainMatch, error) {
+	subjIRI, err := s.mapper.EntityIDToIRI(entity.ID)
+	if err != nil {
+		return nil, err
+	}
+	defaultSubj := Term{Kind: TermIRI, Value: subjIRI}
+	baseIRI := s.mapper.BaseIRI()
+
+	type flatKey struct {
+		subjID   string
+		pred     string
+		canonObj string
+	}
+	seen := make(map[flatKey]struct{}, len(entity.Triples))
+	var out []foldedChainMatch
+
+	for _, tr := range entity.Triples {
+		if !slices.Contains(ch.Predicates, tr.Predicate) {
+			continue
+		}
+		subjTerm := defaultSubj
+		subjEntityID := entity.ID
+		if tr.Subject != "" && tr.Subject != entity.ID {
+			if strings.HasPrefix(tr.Subject, "_:") {
+				continue
+			}
+			subjTerm = Term{Kind: TermIRI, Value: export.SubjectIRI(tr.Subject, baseIRI)}
+			subjEntityID = tr.Subject
+		}
+
+		_, objTerm, canonObj, ok, err := resolveTripleTerms(tr, baseIRI)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		fk := flatKey{subjID: subjEntityID, pred: tr.Predicate, canonObj: canonObj}
+		if _, dup := seen[fk]; dup {
+			continue
+		}
+		seen[fk] = struct{}{}
+
+		inter := make([]Term, len(ch.IntermediateNodes))
+		for stepIdx := range ch.IntermediateNodes {
+			bnodeID, err := irimap.BlankNodeID(subjEntityID, tr.Predicate, canonObj, stepIdx)
+			if err != nil {
+				return nil, err
+			}
+			inter[stepIdx] = Term{Kind: TermBlankNode, Value: bnodeID}
+		}
+		out = append(out, foldedChainMatch{
+			Subject:       subjTerm,
+			Intermediates: inter,
+			Object:        objTerm,
+		})
+	}
+	return out, nil
+}
+
+func matchFoldedChain(ch FoldedChain, m foldedChainMatch, sol Solution) (Solution, bool) {
+	ext := sol.Clone()
+	if !bindOrMatchTerm(ch.Subject, m.Subject, ext) {
+		return nil, false
+	}
+	for i, interTerm := range ch.IntermediateNodes {
+		if !bindOrMatchTerm(interTerm, m.Intermediates[i], ext) {
+			return nil, false
+		}
+	}
+	if !bindOrMatchTerm(ch.Object, m.Object, ext) {
+		return nil, false
+	}
+	return ext, true
+}
+
 func (s *execState) evalTriplePattern(tp TriplePattern, solutions []Solution) ([]Solution, error) {
 	if tp.IsStandaloneSubClassPath() {
 		return s.evalStandaloneSubClassPath(tp, solutions)
@@ -683,6 +971,15 @@ func (s *execState) evalTriplePattern(tp TriplePattern, solutions []Solution) ([
 	switch step.Kind {
 	case AccessTypePattern:
 		entities, err = s.readEntitiesByPatterns(step.Patterns)
+		if err == nil {
+			if projPreds := nodeClassPredicatesForTypePattern(tp, solutions); len(projPreds) > 0 {
+				extra, perr := s.readEntitiesByPredicates(projPreds)
+				if perr != nil {
+					return nil, perr
+				}
+				entities = mergeEntitiesByID(entities, extra)
+			}
+		}
 	case AccessPredicate:
 		entities, err = s.readEntitiesByPredicates(step.Predicates)
 	default:
@@ -726,14 +1023,60 @@ func (s *execState) evalTriplePattern(tp TriplePattern, solutions []Solution) ([
 	return next, nil
 }
 
+func nodeClassPredicatesForTypePattern(tp TriplePattern, solutions []Solution) []string {
+	if tp.Object.Kind == TermIRI {
+		return ProjectionPredicatesForNodeClass(tp.Object.Value)
+	}
+	var preds []string
+	for _, sol := range solutions {
+		resolved := resolveTerm(tp.Object, sol)
+		if resolved.Kind == TermIRI {
+			preds = append(preds, ProjectionPredicatesForNodeClass(resolved.Value)...)
+		}
+	}
+	if len(preds) == 0 {
+		return nil
+	}
+	slices.Sort(preds)
+	return slices.Compact(preds)
+}
+
+func mergeEntitiesByID(a, b []graph.EntityState) []graph.EntityState {
+	if len(b) == 0 {
+		return a
+	}
+	if len(a) == 0 {
+		return b
+	}
+	byID := make(map[string]graph.EntityState, len(a)+len(b))
+	for i := range a {
+		byID[a[i].ID] = a[i]
+	}
+	for i := range b {
+		byID[b[i].ID] = b[i]
+	}
+	ids := make([]string, 0, len(byID))
+	for id := range byID {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	out := make([]graph.EntityState, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, byID[id])
+	}
+	return out
+}
+
 func (s *execState) resolveBoundObjectTypePatterns(obj Term, step PlanStep, solutions []Solution) (PlanStep, bool) {
 	var patterns []string
+	preds := []string{RDFTypeIRI}
 	hasUnregistered := false
 	for _, sol := range solutions {
 		resolved := resolveTerm(obj, sol)
 		if resolved.Kind != TermIRI {
 			continue
 		}
+		preds = append(preds, ProjectionPredicatesForNodeClass(resolved.Value)...)
 		pats, err := TypeScanPatternsForClass(resolved.Value, s.org, s.platform)
 		if err != nil {
 			return step, false
@@ -744,6 +1087,8 @@ func (s *execState) resolveBoundObjectTypePatterns(obj Term, step PlanStep, solu
 			patterns = append(patterns, pats...)
 		}
 	}
+	slices.Sort(preds)
+	step.Predicates = slices.Compact(preds)
 	slices.Sort(patterns)
 	patterns = slices.Compact(patterns)
 	if len(patterns) > 0 && !hasUnregistered {
@@ -817,52 +1162,77 @@ func boundIRIFromPatternTerm(t Term, sol Solution) (string, bool) {
 func (s *execState) evalBoundSubjectPattern(tp TriplePattern, candidatePreds []string, solutions []Solution) ([]Solution, error) {
 	idSet := make(map[string]struct{}, len(solutions))
 	entityIDs := make([]string, 0, len(solutions))
+	hasUnseenBNode := false
 	for _, sol := range solutions {
 		subj := resolveTerm(tp.Subject, sol)
-		if subj.Kind != TermIRI {
-			continue
+		switch subj.Kind {
+		case TermIRI:
+			eid, err := s.mapper.IRIToEntityID(subj.Value)
+			if err != nil {
+				continue
+			}
+			if _, seen := idSet[eid]; !seen {
+				idSet[eid] = struct{}{}
+				entityIDs = append(entityIDs, eid)
+			}
+		case TermBlankNode:
+			if _, ok := s.unfoldedBySubj[subj]; !ok {
+				hasUnseenBNode = true
+			}
 		}
-		eid, err := s.mapper.IRIToEntityID(subj.Value)
-		if err != nil {
-			continue
-		}
-		if _, seen := idSet[eid]; !seen {
-			idSet[eid] = struct{}{}
-			entityIDs = append(entityIDs, eid)
-		}
-	}
-	if len(entityIDs) == 0 {
-		return nil, nil
 	}
 
-	entities, err := s.readEntitiesByIDs(entityIDs)
-	if err != nil {
-		return nil, err
-	}
-	if len(entities) == 0 {
-		return nil, nil
-	}
-
-	triplesBySubj := make(map[string][]rdfTriple, len(entities))
-	for i := range entities {
-		subjIRI, err := s.mapper.EntityIDToIRI(entities[i].ID)
+	triplesBySubj := make(map[string][]rdfTriple, len(entityIDs))
+	if len(entityIDs) > 0 {
+		entities, err := s.readEntitiesByIDs(entityIDs)
 		if err != nil {
 			return nil, err
 		}
-		ets, err := s.entityToRDFTriples(&entities[i], candidatePreds)
+		for i := range entities {
+			subjIRI, err := s.mapper.EntityIDToIRI(entities[i].ID)
+			if err != nil {
+				return nil, err
+			}
+			ets, err := s.entityToRDFTriples(&entities[i], candidatePreds)
+			if err != nil {
+				return nil, err
+			}
+			triplesBySubj[subjIRI] = ets
+		}
+	}
+
+	if hasUnseenBNode {
+		var (
+			bnodeEntities []graph.EntityState
+			err           error
+		)
+		if len(candidatePreds) > 0 {
+			bnodeEntities, err = s.readEntitiesByPredicates(candidatePreds)
+		} else {
+			bnodeEntities, err = s.readAllEntities()
+		}
 		if err != nil {
 			return nil, err
 		}
-		triplesBySubj[subjIRI] = ets
+		for i := range bnodeEntities {
+			if _, err := s.entityToRDFTriples(&bnodeEntities[i], nil); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	next := make([]Solution, 0)
 	for _, sol := range solutions {
 		subj := resolveTerm(tp.Subject, sol)
-		if subj.Kind != TermIRI {
+		var candidates []rdfTriple
+		switch subj.Kind {
+		case TermIRI:
+			candidates = triplesBySubj[subj.Value]
+		case TermBlankNode:
+			candidates = s.unfoldedBySubj[subj]
+		default:
 			continue
 		}
-		candidates := triplesBySubj[subj.Value]
 		var stopped bool
 		for _, rt := range candidates {
 			if ext, ok := matchTriplePattern(tp, rt, sol); ok {
@@ -1053,6 +1423,16 @@ func (s *execState) readAllEntities() ([]graph.EntityState, error) {
 	return ents, nil
 }
 
+func (s *execState) recordUnfoldedTriple(rt rdfTriple) {
+	if s.unfoldedBySubj == nil {
+		s.unfoldedBySubj = make(map[Term][]rdfTriple)
+	}
+	existing := s.unfoldedBySubj[rt.Subject]
+	if !slices.Contains(existing, rt) {
+		s.unfoldedBySubj[rt.Subject] = append(existing, rt)
+	}
+}
+
 func (s *execState) entityToRDFTriples(entity *graph.EntityState, filterPredicates []string) ([]rdfTriple, error) {
 	subjIRI, err := s.mapper.EntityIDToIRI(entity.ID)
 	if err != nil {
@@ -1060,10 +1440,12 @@ func (s *execState) entityToRDFTriples(entity *graph.EntityState, filterPredicat
 	}
 	defaultSubj := Term{Kind: TermIRI, Value: subjIRI}
 	baseIRI := s.mapper.BaseIRI()
+	rdfTypeTerm := Term{Kind: TermIRI, Value: RDFTypeIRI}
 
 	seen := make(map[rdfTriple]struct{}, len(entity.Triples)+4)
 	out := make([]rdfTriple, 0, len(entity.Triples)+4)
 	addTriple := func(rt rdfTriple) {
+		s.recordUnfoldedTriple(rt)
 		if _, dup := seen[rt]; !dup {
 			seen[rt] = struct{}{}
 			out = append(out, rt)
@@ -1072,7 +1454,6 @@ func (s *execState) entityToRDFTriples(entity *graph.EntityState, filterPredicat
 
 	includeRDFType := len(filterPredicates) == 0 || slices.Contains(filterPredicates, RDFTypeIRI)
 	if includeRDFType {
-		rdfTypeTerm := Term{Kind: TermIRI, Value: RDFTypeIRI}
 		for _, clsIRI := range VirtualTypeIRIsForEntityID(entity.ID) {
 			addTriple(rdfTriple{
 				Subject:   defaultSubj,
@@ -1083,25 +1464,69 @@ func (s *execState) entityToRDFTriples(entity *graph.EntityState, filterPredicat
 	}
 
 	for _, tr := range entity.Triples {
-		if len(filterPredicates) > 0 && !slices.Contains(filterPredicates, tr.Predicate) {
+		if len(filterPredicates) > 0 && !slices.Contains(filterPredicates, tr.Predicate) && !strings.HasPrefix(tr.Subject, "_:") {
 			continue
 		}
 		subjTerm := defaultSubj
+		subjEntityID := entity.ID
 		if tr.Subject != "" && tr.Subject != entity.ID {
 			if strings.HasPrefix(tr.Subject, "_:") {
 				subjTerm = Term{Kind: TermBlankNode, Value: tr.Subject}
 			} else {
 				subjTerm = Term{Kind: TermIRI, Value: export.SubjectIRI(tr.Subject, baseIRI)}
+				subjEntityID = tr.Subject
 			}
 		}
 
-		predTerm, objTerm, ok, err := resolveTriplePredicateAndObject(tr, baseIRI)
+		predTerm, objTerm, canonObj, ok, err := resolveTripleTerms(tr, baseIRI)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
 			continue
 		}
+
+		meta := vocabulary.GetPredicateMetadata(tr.Predicate)
+		if meta != nil && meta.Projection != nil && len(meta.Projection.Steps) > 0 && subjTerm.Kind == TermIRI {
+			curSubj := subjTerm
+			steps := meta.Projection.Steps
+			for stepIdx, step := range steps {
+				bnodeID, err := irimap.BlankNodeID(subjEntityID, tr.Predicate, canonObj, stepIdx)
+				if err != nil {
+					return nil, err
+				}
+				bnodeTerm := Term{Kind: TermBlankNode, Value: bnodeID}
+				addTriple(rdfTriple{
+					Subject:   curSubj,
+					Predicate: Term{Kind: TermIRI, Value: step.PredicateIRI},
+					Object:    bnodeTerm,
+				})
+				if step.NodeClassIRI != "" {
+					addTriple(rdfTriple{
+						Subject:   bnodeTerm,
+						Predicate: rdfTypeTerm,
+						Object:    Term{Kind: TermIRI, Value: step.NodeClassIRI},
+					})
+					for _, supIRI := range SuperclassesForClassIRI(step.NodeClassIRI) {
+						addTriple(rdfTriple{
+							Subject:   bnodeTerm,
+							Predicate: rdfTypeTerm,
+							Object:    Term{Kind: TermIRI, Value: supIRI},
+						})
+					}
+				}
+				if stepIdx == len(steps)-1 {
+					addTriple(rdfTriple{
+						Subject:   bnodeTerm,
+						Predicate: Term{Kind: TermIRI, Value: step.ValuePredicateIRI},
+						Object:    objTerm,
+					})
+				}
+				curSubj = bnodeTerm
+			}
+			continue
+		}
+
 		addTriple(rdfTriple{
 			Subject:   subjTerm,
 			Predicate: predTerm,
@@ -1120,12 +1545,13 @@ func (s *execState) entityToRDFTriples(entity *graph.EntityState, filterPredicat
 	return out, nil
 }
 
-// resolveTriplePredicateAndObject delegates predicate IRI resolution and object
-// RDF classification to semengine/vocabulary/export via single-triple N-Triples
-// serialization, avoiding any local copy of exporter classification rules.
-func resolveTriplePredicateAndObject(tr message.Triple, baseIRI string) (predTerm, objTerm Term, ok bool, err error) {
+// resolveTripleTerms delegates predicate IRI resolution and object RDF
+// classification to semengine/vocabulary/export via single-triple N-Triples
+// serialization, returning the predicate Term, object Term, and canonical
+// N-Triples object token without copying exporter classification rules.
+func resolveTripleTerms(tr message.Triple, baseIRI string) (predTerm, objTerm Term, canonObj string, ok bool, err error) {
 	if strings.TrimSpace(tr.Predicate) == "" || tr.Object == nil {
-		return Term{}, Term{}, false, nil
+		return Term{}, Term{}, "", false, nil
 	}
 	probe := message.Triple{
 		Subject:   "_:s",
@@ -1135,23 +1561,23 @@ func resolveTriplePredicateAndObject(tr message.Triple, baseIRI string) (predTer
 	}
 	line, err := export.SerializeToString([]message.Triple{probe}, export.NTriples, export.WithBaseIRI(baseIRI))
 	if err != nil {
-		return Term{}, Term{}, false, err
+		return Term{}, Term{}, "", false, err
 	}
 	if line == "" {
-		return Term{}, Term{}, false, nil
+		return Term{}, Term{}, "", false, nil
 	}
 	const prefix = "_:s <"
 	idx := strings.Index(line, "> ")
 	if !strings.HasPrefix(line, prefix) || idx < len(prefix) || !strings.HasSuffix(line, " .\n") {
-		return Term{}, Term{}, false, fmt.Errorf("sparql: unexpected N-Triples probe line %q", line)
+		return Term{}, Term{}, "", false, fmt.Errorf("sparql: unexpected N-Triples probe line %q", line)
 	}
 	predIRI := line[len(prefix):idx]
-	ntObj := line[idx+2 : len(line)-3]
-	objTerm, err = parseNTriplesObjectTerm(ntObj)
+	canonObj = line[idx+2 : len(line)-3]
+	objTerm, err = parseNTriplesObjectTerm(canonObj)
 	if err != nil {
-		return Term{}, Term{}, false, err
+		return Term{}, Term{}, "", false, err
 	}
-	return Term{Kind: TermIRI, Value: predIRI}, objTerm, true, nil
+	return Term{Kind: TermIRI, Value: predIRI}, objTerm, canonObj, true, nil
 }
 
 func parseNTriplesObjectTerm(ntObj string) (Term, error) {

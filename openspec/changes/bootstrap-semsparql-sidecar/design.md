@@ -28,9 +28,10 @@ Implementation proceeds 0 → 1 → 2 (MVP) → 3 → 4. Task 0.1 (`go.mod`, Go 
 structural guards), task 0.2, task 1.1 (`irimap`), task 1.2 (`reader.GraphReader` and `reader.MemoryReader`), task 2.1
 (`sparql` AST and parser), task 2.2 (`sparql` plain-BGP `SELECT`/`ASK` planner and executor), task 2.3 (`server`
 `GET`/`POST /sparql`, `SELECT`/`ASK` result negotiation and serialization, bounded input/query budgets, and
-localhost/auth bind defaults), and task 3.1 (`sparql` virtual `rdf:type` and `rdfs:subClassOf*` resolution, standalone
+localhost/auth bind defaults), task 3.1 (`sparql` virtual `rdf:type` and `rdfs:subClassOf*` resolution, standalone
 registered-class closure evaluation, explicit/virtual graph-set merging, and startup `ValidateSuperclassClosure` checked
-by `server.New`) are complete; each remaining issue task is a reviewable implementation PR. Phase 5 is
+by `server.New`), and task 3.2 (`sparql` complete-chain `ProjectionSpec` folding and equivalent virtual-unfolded
+fallback evaluation) are complete; each remaining issue task is a reviewable implementation PR. Phase 5 is
 optional and separately decided, never an implicit prerequisite for the initial sidecar.
 
 ## Options considered
@@ -59,12 +60,14 @@ optional and separately decided, never an implicit prerequisite for the initial 
 
 `irimap` (`Mapper`, `CanonicalNTriplesObject`, `BlankNodeID`), `reader` (`GraphReader`, `MemoryReader`,
 `MatchAllPattern`, `ErrNilContext`, `ErrEntityNotFound`, `ErrScanBudgetExceeded`), `sparql` AST/parser, virtual
-`rdf:type`/`rdfs:subClassOf*` resolution, and plain-BGP `SELECT`/`ASK` planner/executor (`Parse`, `Query`, `PlanBGP`,
-`PlanBGPWithScope`, `Executor`, `ValidateSuperclassClosure`, `TypeScanPatternsForClass`,
+`rdf:type`/`rdfs:subClassOf*` resolution, complete-chain `ProjectionSpec` folding and virtual-unfolded fallback, and
+`SELECT`/`ASK` planner/executor (`Parse`, `Query`, `FoldProjections`, `FoldedBGP`, `FoldedChain`,
+`ProjectionPredicatesForStepIRI`, `ProjectionPredicatesForNodeClass`, `AllProjectedPredicates`, `PlanBGP`,
+`PlanBGPWithScope`, `LookupPredicateCandidates`, `Executor`, `ValidateSuperclassClosure`, `TypeScanPatternsForClass`,
 `VirtualTypeIRIsForEntityID`, `SuperclassesForClassIRI`, `SubClassClosurePairs`, `ErrSyntax`, `ErrUnsupportedFeature`,
 `ErrResultLimitExceeded`, `ErrScanBudgetExceeded`, `ErrQueryTimeout`, `ErrIncompleteSuperclassClosure`), and `server`
 `/sparql` `SELECT`/`ASK` MVP (`Server`, `Config`, `ValidateConfig`, `NegotiateAccept`, `WriteSelectAskResult`,
-`ErrNotAcceptable`, `ErrUnsafeExposure`, `ErrQueryTooLarge`) are implemented in tasks 1.1–3.1; the remaining rows are
+`ErrNotAcceptable`, `ErrUnsafeExposure`, `ErrQueryTooLarge`) are implemented in tasks 1.1–3.2; the remaining rows are
 proposed surfaces from issue #1. There is no additional public API for hypothetical users.
 
 ## Read-only query execution
