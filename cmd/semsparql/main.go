@@ -60,7 +60,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		natsURL         = fs.String("nats-url", defaultNATSURL, "NATS server URL")
 		natsTimeout     = fs.Duration("nats-timeout", defaultNATSTimeout, "Per-request NATS RPC timeout")
 		baseIRI         = fs.String("base-iri", vocabulary.SemEngineBase, "Base IRI for canonical entity IRIs")
-		bearerToken     = fs.String("bearer-token", "", "Bearer token for HTTP authentication (or set SEMSPARQL_BEARER_TOKEN)")
+		bearerToken     = fs.String("bearer-token", "", "Bearer token for HTTP authentication (prefer SEMSPARQL_BEARER_TOKEN to avoid process-list exposure)")
 		tlsCertPath     = fs.String("tls-cert", "", "Path to server TLS certificate PEM file")
 		tlsKeyPath      = fs.String("tls-key", "", "Path to server TLS private key PEM file")
 		tlsClientCAPath = fs.String("tls-client-ca", "", "Path to client CA bundle PEM file for mTLS verification")
@@ -136,7 +136,6 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		*natsURL,
 		natsclient.WithName("semsparql"),
 		natsclient.WithTimeout(*natsTimeout),
-		natsclient.WithMaxReconnects(0),
 		natsclient.WithHealthInterval(0),
 	)
 	if err != nil {

@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -161,17 +165,80 @@ func TestNATSRPCReaderConstructorAndInputValidation(t *testing.T) {
 }
 
 func TestNATSRPCReaderNoLiteralQuerySubjectsInSource(t *testing.T) {
-	// Enforce query-pattern skill rule: never spell a graph.ingest.query.* subject
-	// as a literal in reader/ or cmd/semsparql/ production files.
-	forbidden := "graph.ingest." + "query."
-	for _, rel := range []string{"nats.go", "reader.go", "memory.go", "../cmd/semsparql/main.go"} {
-		raw, err := os.ReadFile(filepath.Clean(rel))
+	// Enforce query-pattern and read-only rules: never spell a graph.ingest.query.*
+	// or graph.mutation.* subject as a string literal (quoted or raw backtick) in
+	// any non-test Go file across the repository.
+	forbiddenSubstrings := []string{
+		"graph.ingest." + "query",
+		"graph." + "mutation",
+	}
+
+	scanGoSource := func(filename string, src []byte) error {
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, filename, src, 0)
 		if err != nil {
-			t.Fatalf("read %s: %v", rel, err)
+			return fmt.Errorf("parse %s: %w", filename, err)
 		}
-		if strings.Contains(string(raw), `"`+forbidden) {
-			t.Fatalf("%s contains forbidden literal subject prefix %q; must read from graph.QueryVerbs()", rel, forbidden)
+		var foundErr error
+		ast.Inspect(file, func(n ast.Node) bool {
+			if foundErr != nil {
+				return false
+			}
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			val, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				val = lit.Value
+			}
+			for _, forbidden := range forbiddenSubstrings {
+				if strings.Contains(val, forbidden) {
+					pos := fset.Position(lit.Pos())
+					foundErr = fmt.Errorf("%s:%d contains forbidden literal %q (matched %q)", pos.Filename, pos.Line, val, forbidden)
+					return false
+				}
+			}
+			return true
+		})
+		return foundErr
+	}
+
+	// Self-test that both double-quoted and raw backtick literals are caught, while split tokens pass.
+	if err := scanGoSource("synthetic_clean.go", []byte("package p\nconst s = `graph.ingest.` + `query.entity`\n")); err != nil {
+		t.Fatalf("scanGoSource rejected split non-literal tokens: %v", err)
+	}
+	if err := scanGoSource("synthetic_backtick.go", []byte("package p\nconst s = `graph.ingest."+"query.entity`\n")); err == nil {
+		t.Fatal("scanGoSource failed to detect raw backtick graph.ingest.query literal")
+	}
+	if err := scanGoSource("synthetic_mutation.go", []byte("package p\nconst s = \"graph."+"mutation.apply\"\n")); err == nil {
+		t.Fatal("scanGoSource failed to detect graph.mutation literal")
+	}
+
+	dirs := []string{".", "../cmd/semsparql", "../server", "../sparql", "../irimap"}
+	checkedFiles := 0
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(filepath.Clean(dir))
+		if err != nil {
+			t.Fatalf("ReadDir(%s): %v", dir, err)
 		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+				continue
+			}
+			fullPath := filepath.Join(dir, entry.Name())
+			raw, err := os.ReadFile(fullPath)
+			if err != nil {
+				t.Fatalf("ReadFile(%s): %v", fullPath, err)
+			}
+			if err := scanGoSource(fullPath, raw); err != nil {
+				t.Fatal(err)
+			}
+			checkedFiles++
+		}
+	}
+	if checkedFiles < 10 {
+		t.Fatalf("expected to scan at least 10 production .go files, scanned %d", checkedFiles)
 	}
 }
 
@@ -294,44 +361,101 @@ func TestNATSRPCReaderShortPagesContinuationAndFailClosed(t *testing.T) {
 		t.Fatalf("ScanPrefix with non-matching server entity err = %v, want ErrPatternCapabilityUnsupported", err)
 	}
 
-	// 4. Unrequested entity in GetBatch fails closed as a state contract error.
-	unrequestedBatchStub := &stubClassifiedRequester{
-		handler: func(_ context.Context, _ string, _ []byte, _ time.Duration) ([]byte, error) {
-			return json.Marshal(graph.EntityBatchResponse{
+	// 4. ADR-084 batch contract violations fail closed as fatal state contract errors:
+	// - unrequested entity
+	// - omitted requested ID from both Entities and Missing
+	// - unrequested Missing ID
+	// - empty Missing.Reason
+	// - ID present in both Entities and Missing
+	batchViolationCases := []struct {
+		name string
+		resp graph.EntityBatchResponse
+	}{
+		{
+			name: "unrequested_entity",
+			resp: graph.EntityBatchResponse{
 				Entities: []graph.EntityState{mkEntity(id2, "Recon")},
-			})
+			},
+		},
+		{
+			name: "omitted_requested_id",
+			resp: graph.EntityBatchResponse{
+				Entities: []graph.EntityState{},
+			},
+		},
+		{
+			name: "unrequested_missing_id",
+			resp: graph.EntityBatchResponse{
+				Entities: []graph.EntityState{mkEntity(id1, "ISR")},
+				Missing:  []graph.MissingEntity{{ID: id2, Reason: graph.MissingNotFound}},
+			},
+		},
+		{
+			name: "empty_missing_reason",
+			resp: graph.EntityBatchResponse{
+				Missing: []graph.MissingEntity{{ID: id1, Reason: ""}},
+			},
+		},
+		{
+			name: "id_in_both_entities_and_missing",
+			resp: graph.EntityBatchResponse{
+				Entities: []graph.EntityState{mkEntity(id1, "ISR")},
+				Missing:  []graph.MissingEntity{{ID: id1, Reason: graph.MissingNotFound}},
+			},
 		},
 	}
-	unreqReader, err := NewNATSRPCReader(unrequestedBatchStub, time.Second)
-	if err != nil {
-		t.Fatalf("NewNATSRPCReader: %v", err)
-	}
-	if _, err := unreqReader.GetBatch(ctx, []string{id1}); !errs.IsFatal(err) {
-		t.Fatalf("GetBatch with unrequested entity err = %v, want fatal state contract error", err)
+	for _, tc := range batchViolationCases {
+		t.Run("batch_violation/"+tc.name, func(t *testing.T) {
+			vStub := &stubClassifiedRequester{
+				handler: func(_ context.Context, _ string, _ []byte, _ time.Duration) ([]byte, error) {
+					return json.Marshal(tc.resp)
+				},
+			}
+			vReader, err := NewNATSRPCReader(vStub, time.Second)
+			if err != nil {
+				t.Fatalf("NewNATSRPCReader: %v", err)
+			}
+			if _, err := vReader.GetBatch(ctx, []string{id1}); !errs.IsFatal(err) {
+				t.Fatalf("GetBatch(%s) err = %v, want fatal state contract error", tc.name, err)
+			}
+		})
 	}
 
-	// 5. Batch response omitting a requested ID from both Entities and Missing still records it as MissingNotFound.
-	silentDropBatchStub := &stubClassifiedRequester{
-		handler: func(_ context.Context, _ string, _ []byte, _ time.Duration) ([]byte, error) {
+	// 5. GetBatch adaptively splits chunks when response_too_large is returned.
+	splitStub := &stubClassifiedRequester{
+		handler: func(_ context.Context, _ string, data []byte, _ time.Duration) ([]byte, error) {
+			var req struct {
+				IDs []string `json:"ids"`
+			}
+			if err := json.Unmarshal(data, &req); err != nil {
+				return nil, err
+			}
+			if len(req.IDs) > 1 {
+				return nil, errs.ClassifiedCode(errs.ErrorInvalid, "response_too_large", errors.New("payload exceeded max_payload"))
+			}
+			if req.IDs[0] == id2 {
+				return json.Marshal(graph.EntityBatchResponse{
+					Missing: []graph.MissingEntity{{ID: id2, Reason: graph.MissingNotFound}},
+				})
+			}
 			return json.Marshal(graph.EntityBatchResponse{
-				Entities: []graph.EntityState{mkEntity(id2, "Recon")},
-				// id1 omitted from Missing by a pre-ADR-084 responder
+				Entities: []graph.EntityState{mkEntity(req.IDs[0], "ISR")},
 			})
 		},
 	}
-	dropReader, err := NewNATSRPCReader(silentDropBatchStub, time.Second)
+	splitReader, err := NewNATSRPCReader(splitStub, time.Second)
 	if err != nil {
 		t.Fatalf("NewNATSRPCReader: %v", err)
 	}
-	batchOut, err := dropReader.GetBatch(ctx, []string{id2, id1})
+	splitResp, err := splitReader.GetBatch(ctx, []string{id3, id1, id2})
 	if err != nil {
-		t.Fatalf("GetBatch: %v", err)
+		t.Fatalf("GetBatch with adaptive split failed: %v", err)
 	}
-	if len(batchOut.Entities) != 1 || batchOut.Entities[0].ID != id2 {
-		t.Fatalf("batchOut.Entities = %+v, want [%s]", batchOut.Entities, id2)
+	if len(splitResp.Entities) != 2 || splitResp.Entities[0].ID != id1 || splitResp.Entities[1].ID != id3 {
+		t.Fatalf("splitResp.Entities = %+v, want [%s, %s]", splitResp.Entities, id1, id3)
 	}
-	if len(batchOut.Missing) != 1 || batchOut.Missing[0].ID != id1 || batchOut.Missing[0].Reason != graph.MissingNotFound {
-		t.Fatalf("batchOut.Missing = %+v, want [{ID:%s Reason:not_found}]", batchOut.Missing, id1)
+	if len(splitResp.Missing) != 1 || splitResp.Missing[0].ID != id2 {
+		t.Fatalf("splitResp.Missing = %+v, want [%s]", splitResp.Missing, id2)
 	}
 }
 
@@ -352,7 +476,7 @@ func TestNATSRPCReaderVerifyPatternCapabilityRefusesIncompatibleServer(t *testin
 		t.Fatalf("VerifyPatternCapability(legacy server) = %v, want ErrPatternCapabilityUnsupported", err)
 	}
 
-	// 2. Responder returning a transient/unexpected error on negative probe is refused.
+	// 2. Transient/transport errors pass through directly without being misclassified as ErrPatternCapabilityUnsupported.
 	transientStub := &stubClassifiedRequester{
 		handler: func(_ context.Context, _ string, _ []byte, _ time.Duration) ([]byte, error) {
 			return nil, errs.ClassifiedCode(errs.ErrorTransient, graph.ErrorCodeInternal, errors.New("broker busy"))
@@ -362,11 +486,25 @@ func TestNATSRPCReaderVerifyPatternCapabilityRefusesIncompatibleServer(t *testin
 	if err != nil {
 		t.Fatalf("NewNATSRPCReader: %v", err)
 	}
-	if err := transientReader.VerifyPatternCapability(ctx); !errors.Is(err, ErrPatternCapabilityUnsupported) || !errs.IsTransient(err) {
-		t.Fatalf("VerifyPatternCapability(transient error) = %v, want ErrPatternCapabilityUnsupported wrapping transient error", err)
+	if err := transientReader.VerifyPatternCapability(ctx); !errs.IsTransient(err) || errors.Is(err, ErrPatternCapabilityUnsupported) {
+		t.Fatalf("VerifyPatternCapability(transient error) = %v, want transient error without ErrPatternCapabilityUnsupported", err)
 	}
 
-	// 3. Capable responder rejects invalid pattern with ErrorCodeEntityIDPatternInvalid and accepts MatchAllPattern.
+	// 3. Non-transient classified error with unexpected code IS reported as ErrPatternCapabilityUnsupported.
+	wrongCodeStub := &stubClassifiedRequester{
+		handler: func(_ context.Context, _ string, _ []byte, _ time.Duration) ([]byte, error) {
+			return nil, errs.ClassifiedCode(errs.ErrorInvalid, graph.ErrorCodeInvalidRequest, errors.New("unknown field"))
+		},
+	}
+	wrongCodeReader, err := NewNATSRPCReader(wrongCodeStub, time.Second)
+	if err != nil {
+		t.Fatalf("NewNATSRPCReader: %v", err)
+	}
+	if err := wrongCodeReader.VerifyPatternCapability(ctx); !errors.Is(err, ErrPatternCapabilityUnsupported) {
+		t.Fatalf("VerifyPatternCapability(wrong classified code) = %v, want ErrPatternCapabilityUnsupported", err)
+	}
+
+	// 4. Capable responder rejects invalid pattern with ErrorCodeEntityIDPatternInvalid and accepts MatchAllPattern.
 	capableStub := &stubClassifiedRequester{
 		handler: func(_ context.Context, _ string, data []byte, _ time.Duration) ([]byte, error) {
 			var req graph.PrefixQueryRequest
@@ -692,16 +830,14 @@ func TestScanPatternReaderParity(t *testing.T) {
 		}
 	}
 
-	// 2. ScanPattern budget parity (exact budget succeeds; budget-1 fails with ErrScanBudgetExceeded).
+	// 2. ScanPattern budget parity (exact budget succeeds; budget-1 fails with ErrScanBudgetExceeded and returns bounded partial slice).
 	for _, budget := range []int{0, 1, 3, 4} {
 		want, wantErr := memReader.ScanPattern(ctx, "c360.ops.*.intel.platform.*", budget)
 		got, gotErr := natsReader.ScanPattern(ctx, "c360.ops.*.intel.platform.*", budget)
 		if errors.Is(wantErr, ErrScanBudgetExceeded) != errors.Is(gotErr, ErrScanBudgetExceeded) {
 			t.Fatalf("ScanPattern budget=%d err = %v, want %v", budget, gotErr, wantErr)
 		}
-		if wantErr == nil {
-			assertEntityIDsAndTriplesMatch(t, fmt.Sprintf("ScanPattern(budget=%d)", budget), got, want)
-		}
+		assertEntityIDsAndTriplesMatch(t, fmt.Sprintf("ScanPattern(budget=%d)", budget), got, want)
 	}
 
 	// 3. ScanPrefix parity across multi-page cursors and exact 6-part prefix.
@@ -719,8 +855,8 @@ func TestScanPatternReaderParity(t *testing.T) {
 		}
 		assertEntityIDsAndTriplesMatch(t, fmt.Sprintf("ScanPrefix(%q)", prefix), got, want)
 	}
-	if _, err := natsReader.ScanPrefix(ctx, "c360.ops", 2); !errors.Is(err, ErrScanBudgetExceeded) {
-		t.Fatalf("ScanPrefix(budget=2) = %v, want ErrScanBudgetExceeded", err)
+	if partial, err := natsReader.ScanPrefix(ctx, "c360.ops", 2); !errors.Is(err, ErrScanBudgetExceeded) || len(partial) != 2 {
+		t.Fatalf("ScanPrefix(budget=2) = (len=%d, %v), want len=2 and ErrScanBudgetExceeded", len(partial), err)
 	}
 
 	// 4. GetEntity parity (found and missing).
@@ -739,11 +875,16 @@ func TestScanPatternReaderParity(t *testing.T) {
 		}
 	}
 
-	// 5. GetBatch parity (found, missing, duplicates, unsorted order).
+	// 5. GetBatch parity across all 7 ~850B entities + missing IDs (exceeding the 4 KiB
+	// NATS max_payload in a single RPC and exercising adaptive batch splitting).
 	batchReq := []string{
 		"c360.ops.sys3.intel.platform.uav3",
 		"c360.ops.sys1.intel.platform.ghost1",
 		"c360.ops.sys1.intel.platform.uav1",
+		"c360.ops.sys2.intel.platform.uav2",
+		"c360.ops.sys1.intel.sensor.radar1",
+		"c360.ops.sys2.intel.sensor.eo1",
+		"c360.ops.sys4.intel.platform.uav4",
 		"c360.ops.sys3.intel.platform.uav3",
 		"ally.eu.sys2.intel.platform.uav9",
 		"c360.ops.sys9.intel.platform.ghost2",

@@ -1645,6 +1645,20 @@ func TestIntegrationDIEKMEndToEndSuite(t *testing.T) {
 		if respBudget.StatusCode != http.StatusUnprocessableEntity {
 			t.Fatalf("scan budget breach status = %d, want 422", respBudget.StatusCode)
 		}
+
+		// f) Multi-entity GetBatch across all 8 DIEKM fixture entities (>4 KiB combined JSON)
+		// succeeds under MaxPayload=4096 by adaptively splitting on response_too_large.
+		allIDs := make([]string, 0, len(env.entities))
+		for _, ent := range env.entities {
+			allIDs = append(allIDs, ent.ID)
+		}
+		batchEnts, err := env.natsReader.GetBatch(ctx, allIDs)
+		if err != nil {
+			t.Fatalf("natsReader.GetBatch(%d entities under MaxPayload=4096): %v", len(allIDs), err)
+		}
+		if batchEnts == nil || len(batchEnts.Entities) != len(allIDs) {
+			t.Fatalf("natsReader.GetBatch len = %v, want %d", batchEnts, len(allIDs))
+		}
 	})
 
 	// 10. TestUnsupportedFeatureErrors

@@ -55,23 +55,32 @@ func TestRunConfigAndFlagValidation(t *testing.T) {
 	}
 
 	// 2. Flag validation errors before NATS connection.
-	invalidFlags := [][]string{
-		{"-unknown-flag"},
-		{"unexpected-positional-arg"},
-		{"-nats-url", "   "},
-		{"-nats-timeout", "-1s"},
-		{"-query-timeout", "0s"},
-		{"-max-results", "0"},
-		{"-max-scan-entities", "0"},
-		{"-max-query-bytes", "0"},
-		{"-max-export-bytes", "0"},
-		{"-tls-cert", "only-cert.pem"},
-		{"-tls-key", "only-key.pem"},
-		{"-tls-cert", "nonexistent.pem", "-tls-key", "nonexistent.key"},
+	invalidFlags := []struct {
+		args    []string
+		wantSub string
+	}{
+		{args: []string{"-unknown-flag"}, wantSub: "parse flags: flag provided but not defined: -unknown-flag"},
+		{args: []string{"unexpected-positional-arg"}, wantSub: "unexpected positional arguments"},
+		{args: []string{"-nats-url", "   "}, wantSub: "nats-url must not be empty"},
+		{args: []string{"-nats-timeout", "-1s"}, wantSub: "nats-timeout must not be negative"},
+		{args: []string{"-query-timeout", "0s"}, wantSub: "query-timeout must be positive"},
+		{args: []string{"-max-results", "0"}, wantSub: "max-results must be positive"},
+		{args: []string{"-max-scan-entities", "0"}, wantSub: "max-scan-entities must be positive"},
+		{args: []string{"-max-query-bytes", "0"}, wantSub: "max-query-bytes must be positive"},
+		{args: []string{"-max-export-bytes", "0"}, wantSub: "max-export-bytes must be positive"},
+		{args: []string{"-base-iri", "not-a-valid-iri"}, wantSub: "invalid base IRI"},
+		{args: []string{"-base-iri", "https://example.org/entities?foo=bar"}, wantSub: "invalid base IRI"},
+		{args: []string{"-tls-cert", "only-cert.pem"}, wantSub: "tls configuration requires both -tls-cert and -tls-key"},
+		{args: []string{"-tls-key", "only-key.pem"}, wantSub: "tls configuration requires both -tls-cert and -tls-key"},
+		{args: []string{"-tls-cert", "nonexistent.pem", "-tls-key", "nonexistent.key"}, wantSub: "load TLS key pair"},
 	}
-	for _, args := range invalidFlags {
-		if err := run(ctx, args, nil, nil); err == nil {
-			t.Fatalf("run(%v) succeeded, want validation error", args)
+	for _, tc := range invalidFlags {
+		err := run(ctx, tc.args, nil, nil)
+		if err == nil {
+			t.Fatalf("run(%v) succeeded, want validation error containing %q", tc.args, tc.wantSub)
+		}
+		if !strings.Contains(err.Error(), tc.wantSub) {
+			t.Fatalf("run(%v) error = %q, want substring %q", tc.args, err.Error(), tc.wantSub)
 		}
 	}
 

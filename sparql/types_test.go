@@ -150,7 +150,7 @@ func TestVirtualRDFTypeAndSubclassResolution(t *testing.T) {
 				SELECT ?s WHERE { ?s rdf:type/rdfs:subClassOf* obo:BFO_0000030 }
 				ORDER BY ?s
 			`,
-			WithOrgPlatform("c360", "ops"),
+			withOrgPlatform("c360", "ops"),
 		)
 		if err != nil {
 			t.Fatalf("ExecuteQuery(scoped BFO_0000030): %v", err)
@@ -198,7 +198,7 @@ func TestVirtualRDFTypeAndSubclassResolution(t *testing.T) {
 				SELECT ?s WHERE { ?s rdf:type/rdfs:subClassOf* obo:BFO_0000001 }
 				ORDER BY ?s
 			`,
-			WithOrgPlatform("c360", "ops"),
+			withOrgPlatform("c360", "ops"),
 		)
 		if err != nil {
 			t.Fatalf("ExecuteQuery(BFO_0000001): %v", err)
@@ -325,7 +325,7 @@ func TestVirtualRDFTypeAndSubclassResolution(t *testing.T) {
 				}
 				ORDER BY ?s ?sub
 			`,
-			WithOrgPlatform("c360", "ops"),
+			withOrgPlatform("c360", "ops"),
 		)
 		if err != nil {
 			t.Fatalf("ExecuteQuery(join standalone + ?s a ?sub): %v", err)
@@ -400,11 +400,11 @@ func TestVirtualRDFTypeAndSubclassResolution(t *testing.T) {
 	})
 
 	t.Run("type helper validation and scan budget enforcement on bound-class scans", func(t *testing.T) {
-		if _, err := EntityTypePattern("invalid-key", "", ""); err == nil {
-			t.Fatal("EntityTypePattern(invalid-key) = nil, want error")
+		if _, err := entityTypePattern("invalid-key", "", ""); err == nil {
+			t.Fatal("entityTypePattern(invalid-key) = nil, want error")
 		}
-		if _, err := EntityTypePattern("intel.platform", "bad..org", "ops"); err == nil {
-			t.Fatal("EntityTypePattern(bad..org) = nil, want error")
+		if _, err := entityTypePattern("intel.platform", "bad..org", "ops"); err == nil {
+			t.Fatal("entityTypePattern(bad..org) = nil, want error")
 		}
 		if pats, err := TypeScanPatternsForClass("", "", ""); err != nil || pats != nil {
 			t.Fatalf("TypeScanPatternsForClass(\"\") = (%v, %v), want (nil, nil)", pats, err)
@@ -435,7 +435,7 @@ func TestVirtualRDFTypeAndSubclassResolution(t *testing.T) {
 				SELECT ?s WHERE { ?s a obo:BFO_0000001 }
 			`,
 			WithAllowTruncation(true),
-			WithOrgPlatform("c360", "ops"),
+			withOrgPlatform("c360", "ops"),
 		)
 		if err != nil {
 			t.Fatalf("bound-class scan with AllowTruncation: %v", err)

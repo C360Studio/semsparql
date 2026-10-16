@@ -441,6 +441,24 @@ func TestBlankNodeIDMultiValued(t *testing.T) {
 	if got, err := CanonicalNTriplesObject(message.Triple{Subject: entityID, Predicate: predicate, Object: nil}, baseIRI); err == nil {
 		t.Fatalf("CanonicalNTriplesObject with nil object = %q, nil; want error", got)
 	}
+	if got, err := CanonicalNTriplesObject(message.Triple{Subject: entityID, Predicate: "bad>pred", Object: "v"}, baseIRI); err == nil {
+		t.Fatalf("CanonicalNTriplesObject with invalid predicate = %q, nil; want error", got)
+	}
+	if got, err := CanonicalNTriplesObject(message.Triple{Subject: entityID, Predicate: predicate, Object: "v"}, "https://bad>base.example"); err == nil {
+		t.Fatalf("CanonicalNTriplesObject with invalid baseIRI = %q, nil; want error", got)
+	}
+
+	// Verify ValidateBaseIRI accepts valid http(s) bases and rejects relative or unsafe bases.
+	for _, validBase := range []string{"", "https://rdf.c360.example", "http://localhost:8080/rdf/"} {
+		if err := ValidateBaseIRI(validBase); err != nil {
+			t.Fatalf("ValidateBaseIRI(%q) failed: %v", validBase, err)
+		}
+	}
+	for _, badBase := range []string{"///", "ftp://example.org", "relative/path", "https://", "https://example.org/a>b", "https://example.org?q=1", "https://example.org#frag", "https://user@example.org"} {
+		if err := ValidateBaseIRI(badBase); err == nil {
+			t.Fatalf("ValidateBaseIRI(%q) = nil, want error", badBase)
+		}
+	}
 }
 
 func FuzzIRIToEntityID(f *testing.F) {

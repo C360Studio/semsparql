@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -18,6 +19,108 @@ import (
 // canonical "{base}/entities/{org}/{platform}/{system}/{domain}/{type}/{instance}"
 // namespace or does not decode to a valid six-part SemEngine entity ID.
 var ErrNotEntityIRI = errors.New("irimap: IRI is not a canonical entity IRI")
+
+// ErrTripleRejectedByExporter indicates that semengine/vocabulary/export
+// produced an empty N-Triples output for a probe triple (for example on NaN/Inf floats).
+var ErrTripleRejectedByExporter = errors.New("irimap: exporter rejected triple object")
+
+// ValidateBaseIRI checks that baseIRI is either empty (defaulting to
+// vocabulary.SemEngineBase) or an absolute http(s):// IRI with a non-empty host,
+// no userinfo/query/fragment, and no N-Triples unsafe characters.
+func ValidateBaseIRI(baseIRI string) error {
+	if baseIRI == "" {
+		return nil
+	}
+	trimmed := strings.TrimRight(baseIRI, "/")
+	if trimmed == "" {
+		return fmt.Errorf("irimap: invalid base IRI %q: empty after stripping trailing slashes", baseIRI)
+	}
+	if err := validateSafeHTTPIRI(trimmed); err != nil {
+		return fmt.Errorf("irimap: invalid base IRI %q: %w", baseIRI, err)
+	}
+	return nil
+}
+
+func validateSafeHTTPIRI(raw string) error {
+	for _, r := range raw {
+		if r <= 0x20 || r == 0x7f || strings.ContainsRune(`<>"{}|^`+"`"+`\`, r) {
+			return fmt.Errorf("contains disallowed N-Triples IRI character %q", r)
+		}
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("scheme must be http or https, got %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return errors.New("host must not be empty")
+	}
+	if u.User != nil {
+		return errors.New("userinfo is not permitted")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("query string and fragment are not permitted")
+	}
+	return nil
+}
+
+func validatePredicateForExport(pred string) error {
+	if strings.TrimSpace(pred) == "" {
+		return errors.New("irimap: empty predicate")
+	}
+	if strings.Contains(pred, "://") || strings.HasPrefix(pred, "urn:") {
+		for _, r := range pred {
+			if r <= 0x20 || r == 0x7f || strings.ContainsRune(`<>"{}|^`+"`"+`\`, r) {
+				return fmt.Errorf("irimap: invalid predicate IRI %q: contains disallowed character %q", pred, r)
+			}
+		}
+		if strings.HasPrefix(pred, "urn:") {
+			if len(pred) <= len("urn:") {
+				return fmt.Errorf("irimap: invalid predicate IRI %q", pred)
+			}
+			return nil
+		}
+		u, err := url.Parse(pred)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("irimap: invalid predicate IRI %q", pred)
+		}
+		return nil
+	}
+	if !vocabulary.IsValidPredicate(pred) {
+		return fmt.Errorf("irimap: invalid three-part predicate %q", pred)
+	}
+	return nil
+}
+
+// normalizeSourceTripleDatatype maps explicit "iri" / "@id" or prefixed/full
+// XSD/RDF datatype declarations onto tr.Datatype while leaving SemEngine's
+// pragmatic DataType constants ("float", "int", "bool", "string", "datetime",
+// "json", "entity_id") untouched so vocabulary/export's classifyByDeclaredDataType
+// handles them without emitting relative datatype IRIs.
+func normalizeSourceTripleDatatype(tr message.Triple) message.Triple {
+	if tr.Datatype != "" {
+		if tr.Datatype == "iri" {
+			tr.Datatype = message.EntityReferenceDatatype
+		}
+		return tr
+	}
+	meta := vocabulary.GetPredicateMetadata(tr.Predicate)
+	if meta == nil || meta.DataType == "" {
+		return tr
+	}
+	switch {
+	case meta.DataType == "iri" || meta.DataType == message.EntityReferenceDatatype:
+		tr.Datatype = message.EntityReferenceDatatype
+	case strings.HasPrefix(meta.DataType, "xsd:") ||
+		strings.HasPrefix(meta.DataType, "rdf:") ||
+		strings.HasPrefix(meta.DataType, "http://") ||
+		strings.HasPrefix(meta.DataType, "https://"):
+		tr.Datatype = meta.DataType
+	}
+	return tr
+}
 
 // Mapper translates between six-part SemEngine entity IDs and canonical entity
 // IRIs under a single shared base IRI, delegating forward construction to
@@ -80,33 +183,50 @@ func (m *Mapper) IRIToEntityID(iri string) (string, error) {
 	return eid.Key(), nil
 }
 
+// CanonicalNTriplesPredicateAndObject extracts the exporter-owned canonical
+// predicate IRI and N-Triples object representation for tr under baseIRI by
+// normalizing tr's datatype metadata and serializing a single probe triple
+// through export.SerializeToString(..., export.NTriples).
+func CanonicalNTriplesPredicateAndObject(tr message.Triple, baseIRI string) (string, string, error) {
+	if err := ValidateBaseIRI(baseIRI); err != nil {
+		return "", "", err
+	}
+	if err := validatePredicateForExport(tr.Predicate); err != nil {
+		return "", "", err
+	}
+	if tr.Object == nil {
+		return "", "", fmt.Errorf("irimap: nil triple object for predicate %q", tr.Predicate)
+	}
+	normTr := normalizeSourceTripleDatatype(tr)
+	probe := message.Triple{
+		Subject:   "_:s",
+		Predicate: normTr.Predicate,
+		Object:    normTr.Object,
+		Datatype:  normTr.Datatype,
+	}
+	out, err := export.SerializeToString([]message.Triple{probe}, export.NTriples, export.WithBaseIRI(normalizeBaseIRI(baseIRI)))
+	if err != nil {
+		return "", "", fmt.Errorf("irimap: serialize N-Triples object: %w", err)
+	}
+	if out == "" {
+		return "", "", fmt.Errorf("%w: %#v (datatype %q)", ErrTripleRejectedByExporter, tr.Object, tr.Datatype)
+	}
+	const prefix = "_:s <"
+	idx := strings.Index(out, "> ")
+	if !strings.HasPrefix(out, prefix) || idx < len(prefix) || !strings.HasSuffix(out, " .\n") {
+		return "", "", fmt.Errorf("irimap: unexpected N-Triples line %q", out)
+	}
+	predIRI := out[len(prefix):idx]
+	canonObj := out[idx+2 : len(out)-3]
+	return predIRI, canonObj, nil
+}
+
 // CanonicalNTriplesObject extracts the exporter-owned canonical N-Triples
 // object representation for tr under baseIRI by serializing a single probe
 // triple through export.SerializeToString(..., export.NTriples).
 func CanonicalNTriplesObject(tr message.Triple, baseIRI string) (string, error) {
-	if strings.TrimSpace(tr.Predicate) == "" {
-		return "", errors.New("irimap: empty predicate")
-	}
-	probe := message.Triple{
-		Subject:   "_:s",
-		Predicate: tr.Predicate,
-		Object:    tr.Object,
-		Datatype:  tr.Datatype,
-	}
-	out, err := export.SerializeToString([]message.Triple{probe}, export.NTriples, export.WithBaseIRI(normalizeBaseIRI(baseIRI)))
-	if err != nil {
-		return "", fmt.Errorf("irimap: serialize N-Triples object: %w", err)
-	}
-	if out == "" {
-		return "", fmt.Errorf("irimap: exporter rejected triple object %#v (datatype %q)", tr.Object, tr.Datatype)
-	}
-	// Format is: _:s <predIRI> <object> .\n
-	// predIRI is validated by the exporter to contain no '>' characters.
-	idx := strings.Index(out, "> ")
-	if idx < 0 || !strings.HasSuffix(out, " .\n") {
-		return "", fmt.Errorf("irimap: unexpected N-Triples line %q", out)
-	}
-	return out[idx+2 : len(out)-3], nil
+	_, canonObj, err := CanonicalNTriplesPredicateAndObject(tr, baseIRI)
+	return canonObj, err
 }
 
 // BlankNodeID computes the deterministic intermediate blank-node identifier

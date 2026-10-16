@@ -129,18 +129,18 @@ func TestLookupByIRIMultiMatchUnion(t *testing.T) {
 		t.Fatalf("Parse plan query: %v", err)
 	}
 	bgp := qPlan.Where.Elements[0].(BGPPattern)
-	plan := PlanBGP(bgp, mapper)
+	plan := planBGP(bgp, mapper)
 	if len(plan.Steps) != 3 {
 		t.Fatalf("len(plan.Steps) = %d, want 3", len(plan.Steps))
 	}
-	if plan.Steps[0].Kind != AccessExactEntity || plan.Steps[0].EntityID != idAlpha {
-		t.Fatalf("plan.Steps[0] = %+v, want AccessExactEntity on %s", plan.Steps[0], idAlpha)
+	if plan.Steps[0].Kind != accessExactEntity || plan.Steps[0].EntityID != idAlpha {
+		t.Fatalf("plan.Steps[0] = %+v, want accessExactEntity on %s", plan.Steps[0], idAlpha)
 	}
-	if plan.Steps[1].Kind != AccessPredicate || !slices.Equal(plan.Steps[1].Predicates, wantPreds) {
-		t.Fatalf("plan.Steps[1] = %+v, want AccessPredicate with %v", plan.Steps[1], wantPreds)
+	if plan.Steps[1].Kind != accessPredicate || !slices.Equal(plan.Steps[1].Predicates, wantPreds) {
+		t.Fatalf("plan.Steps[1] = %+v, want accessPredicate with %v", plan.Steps[1], wantPreds)
 	}
-	if plan.Steps[2].Kind != AccessFullScan {
-		t.Fatalf("plan.Steps[2] = %+v, want AccessFullScan", plan.Steps[2])
+	if plan.Steps[2].Kind != accessFullScan {
+		t.Fatalf("plan.Steps[2] = %+v, want accessFullScan", plan.Steps[2])
 	}
 
 	// 2. Unbound subject query expands both dotted predicates and unions results.
@@ -206,14 +206,14 @@ func TestUnknownOrdinaryPredicateYieldsNoMatches(t *testing.T) {
 	mapper := irimap.NewMapper(testBaseIRI)
 	exec := NewExecutor(mr, Config{Mapper: mapper})
 
-	// Planner classifies an unknown ordinary predicate IRI as AccessEmpty.
+	// Planner classifies an unknown ordinary predicate IRI as accessEmpty.
 	q, err := Parse(`SELECT ?s ?o WHERE { ?s <https://example.org/onto#unknownPredicate> ?o }`)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	plan := PlanBGP(q.Where.Elements[0].(BGPPattern), mapper)
-	if len(plan.Steps) != 1 || plan.Steps[0].Kind != AccessEmpty {
-		t.Fatalf("PlanBGP for unknown predicate = %+v, want AccessEmpty", plan.Steps)
+	plan := planBGP(q.Where.Elements[0].(BGPPattern), mapper)
+	if len(plan.Steps) != 1 || plan.Steps[0].Kind != accessEmpty {
+		t.Fatalf("planBGP for unknown predicate = %+v, want accessEmpty", plan.Steps)
 	}
 
 	// Unbound subject with unknown predicate -> 0 solutions, 0 entities scanned, no error.
@@ -752,18 +752,18 @@ func cmpStrings(a, b string) int {
 func TestPlannerAccessKindsAndEdgeCases(t *testing.T) {
 	defer registerTestVocab(t)()
 
-	// Verify AccessKind.String() across all values.
-	wantStrings := map[AccessKind]string{
-		AccessEmpty:       "AccessEmpty",
-		AccessExactEntity: "AccessExactEntity",
-		AccessTypePattern: "AccessTypePattern",
-		AccessPredicate:   "AccessPredicate",
-		AccessFullScan:    "AccessFullScan",
-		AccessKind(99):    "AccessUnknown",
+	// Verify accessKind.String() across all values.
+	wantStrings := map[accessKind]string{
+		accessEmpty:       "AccessEmpty",
+		accessExactEntity: "AccessExactEntity",
+		accessTypePattern: "AccessTypePattern",
+		accessPredicate:   "AccessPredicate",
+		accessFullScan:    "AccessFullScan",
+		accessKind(99):    "AccessUnknown",
 	}
 	for k, want := range wantStrings {
 		if got := k.String(); got != want {
-			t.Fatalf("AccessKind(%d).String() = %q, want %q", k, got, want)
+			t.Fatalf("accessKind(%d).String() = %q, want %q", k, got, want)
 		}
 	}
 
@@ -776,7 +776,7 @@ func TestPlannerAccessKindsAndEdgeCases(t *testing.T) {
 		t.Fatalf("LookupPredicateCandidates(RDFTypeIRI) = %v, want to contain %q", typeCandidates, RDFTypeIRI)
 	}
 
-	// PlanBGP with nil mapper uses default mapper; test literal subject, non-entity IRI subject,
+	// planBGP with nil mapper uses default mapper; test literal subject, non-entity IRI subject,
 	// blank-node/literal predicate, and property path classification.
 	bgp := BGPPattern{
 		Triples: []TriplePattern{
@@ -803,17 +803,17 @@ func TestPlannerAccessKindsAndEdgeCases(t *testing.T) {
 			},
 		},
 	}
-	plan := PlanBGP(bgp, nil)
+	plan := planBGP(bgp, nil)
 	if len(plan.Steps) != 4 {
 		t.Fatalf("len(plan.Steps) = %d, want 4", len(plan.Steps))
 	}
 	for i := 0; i < 3; i++ {
-		if plan.Steps[i].Kind != AccessEmpty {
-			t.Fatalf("plan.Steps[%d].Kind = %v, want AccessEmpty", i, plan.Steps[i].Kind)
+		if plan.Steps[i].Kind != accessEmpty {
+			t.Fatalf("plan.Steps[%d].Kind = %v, want accessEmpty", i, plan.Steps[i].Kind)
 		}
 	}
-	if plan.Steps[3].Kind != AccessFullScan {
-		t.Fatalf("plan.Steps[3].Kind = %v, want AccessFullScan", plan.Steps[3].Kind)
+	if plan.Steps[3].Kind != accessFullScan {
+		t.Fatalf("plan.Steps[3].Kind = %v, want accessFullScan", plan.Steps[3].Kind)
 	}
 }
 
@@ -1078,6 +1078,337 @@ func TestFilterComparisonsEBVAndEscapes(t *testing.T) {
 		resAskTrunc, err := execZero.Execute(context.Background(), qAsk, WithAllowTruncation(true))
 		if err != nil || !resAskTrunc.Truncated || resAskTrunc.TruncationReason != TruncationReasonResultLimit {
 			t.Fatalf("ASK with 0 MaxResults + AllowTruncation: res=%+v err=%v", resAskTrunc, err)
+		}
+	})
+}
+
+type scanCountingReader struct {
+	reader.GraphReader
+	totalEntitiesRead int
+	delayPerCall      time.Duration
+}
+
+func (r *scanCountingReader) sleepIfConfigured(ctx context.Context) error {
+	if r.delayPerCall <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(r.delayPerCall)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (r *scanCountingReader) GetEntity(ctx context.Context, id string) (*graph.EntityState, error) {
+	if err := r.sleepIfConfigured(ctx); err != nil {
+		return nil, err
+	}
+	ent, err := r.GraphReader.GetEntity(ctx, id)
+	if ent != nil {
+		r.totalEntitiesRead++
+	}
+	return ent, err
+}
+
+func (r *scanCountingReader) GetBatch(ctx context.Context, ids []string) (*graph.EntityBatchResponse, error) {
+	if err := r.sleepIfConfigured(ctx); err != nil {
+		return nil, err
+	}
+	resp, err := r.GraphReader.GetBatch(ctx, ids)
+	if resp != nil {
+		r.totalEntitiesRead += len(resp.Entities)
+	}
+	return resp, err
+}
+
+func (r *scanCountingReader) ScanPattern(ctx context.Context, pattern string, budget int) ([]graph.EntityState, error) {
+	if err := r.sleepIfConfigured(ctx); err != nil {
+		return nil, err
+	}
+	ents, err := r.GraphReader.ScanPattern(ctx, pattern, budget)
+	r.totalEntitiesRead += len(ents)
+	return ents, err
+}
+
+func (r *scanCountingReader) EntitiesByPredicate(ctx context.Context, predicate string, budget int) ([]graph.EntityState, error) {
+	if err := r.sleepIfConfigured(ctx); err != nil {
+		return nil, err
+	}
+	var scanned int
+	subCtx := reader.WithScanCounter(ctx, &scanned)
+	ents, err := r.GraphReader.EntitiesByPredicate(subCtx, predicate, budget)
+	r.totalEntitiesRead += max(scanned, len(ents))
+	return ents, err
+}
+
+func TestSubgroupAndUnionLexicalFilterScoping(t *testing.T) {
+	defer registerTestVocab(t)()
+
+	const idAlpha = "c360.ops.uas1.intel.platform.alpha"
+	mr := mustMemoryReader(t, graph.EntityState{
+		ID: idAlpha,
+		Triples: []message.Triple{
+			{Subject: idAlpha, Predicate: "c360.intel.callsign", Object: "ALPHA-1"},
+			{Subject: idAlpha, Predicate: "c360.intel.priority", Object: float64(10)},
+		},
+	})
+	mapper := irimap.NewMapper(testBaseIRI)
+	exec := NewExecutor(mr, Config{Mapper: mapper})
+
+	t.Run("nested group FILTER cannot reference variable bound only in outer group (B2)", func(t *testing.T) {
+		res, err := exec.ExecuteQuery(context.Background(), `
+			PREFIX ex: <https://example.org/onto#>
+			SELECT ?s ?pr ?x WHERE {
+				?s ex:priority ?pr .
+				{
+					?s ex:priority ?x .
+					FILTER(?pr > 2)
+				}
+			}
+		`)
+		if err != nil {
+			t.Fatalf("ExecuteQuery subgroup out-of-scope FILTER: %v", err)
+		}
+		if len(res.Solutions) != 0 {
+			t.Fatalf("len(Solutions) = %d, want 0 because ?pr is unbound inside nested group: %+v", len(res.Solutions), res.Solutions)
+		}
+
+		// When the FILTER is in the outer group (or references the inner variable ?x), the solution matches.
+		resInScope, err := exec.ExecuteQuery(context.Background(), `
+			PREFIX ex: <https://example.org/onto#>
+			SELECT ?s ?pr ?x WHERE {
+				?s ex:priority ?pr .
+				{
+					?s ex:priority ?x .
+					FILTER(?x > 2)
+				}
+			}
+		`)
+		if err != nil {
+			t.Fatalf("ExecuteQuery subgroup in-scope FILTER: %v", err)
+		}
+		if len(resInScope.Solutions) != 1 {
+			t.Fatalf("len(Solutions) = %d, want 1", len(resInScope.Solutions))
+		}
+	})
+
+	t.Run("UNION branch FILTER cannot reference variable bound only in outer group (B2)", func(t *testing.T) {
+		res, err := exec.ExecuteQuery(context.Background(), `
+			PREFIX ex: <https://example.org/onto#>
+			SELECT ?s ?pr WHERE {
+				?s ex:priority ?pr .
+				{
+					?s ex:callsign ?cs .
+					FILTER(?pr > 2)
+				}
+				UNION
+				{
+					?s ex:callsign ?cs .
+					FILTER(?cs = "ALPHA-1")
+				}
+			}
+		`)
+		if err != nil {
+			t.Fatalf("ExecuteQuery UNION lexical FILTER scope: %v", err)
+		}
+		// Branch 1 fails because ?pr is not bound inside branch 1; Branch 2 succeeds and joins with outer ?s/?pr.
+		if len(res.Solutions) != 1 {
+			t.Fatalf("len(Solutions) = %d, want 1 (only branch 2 matches): %+v", len(res.Solutions), res.Solutions)
+		}
+	})
+}
+
+func TestCumulativeScanBudgetAndMidEvalTimeoutAndEscapedLiterals(t *testing.T) {
+	defer registerTestVocab(t)()
+
+	entities := make([]graph.EntityState, 0, 5)
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("c360.ops.uas1.intel.platform.uav%d", i)
+		entities = append(entities, graph.EntityState{
+			ID: id,
+			Triples: []message.Triple{
+				{Subject: id, Predicate: "c360.intel.callsign", Object: fmt.Sprintf("UAV-%d", i)},
+				{Subject: id, Predicate: "c360.intel.priority", Object: float64(i + 1)},
+			},
+		})
+	}
+	mr := mustMemoryReader(t, entities...)
+	mapper := irimap.NewMapper(testBaseIRI)
+
+	t.Run("multi-step query enforces cumulative MaxScanEntities across EntitiesByPredicate and joins (H1)", func(t *testing.T) {
+		spy := &scanCountingReader{GraphReader: mr}
+		exec := NewExecutor(spy, Config{
+			Mapper:          mapper,
+			MaxScanEntities: 4,
+		})
+		_, err := exec.ExecuteQuery(context.Background(), `
+			PREFIX ex: <https://example.org/onto#>
+			SELECT ?s ?cs ?p WHERE {
+				{ ?s ex:callsign ?cs }
+				UNION
+				{ ?s ex:priority ?p }
+			}
+		`)
+		if !errors.Is(err, ErrScanBudgetExceeded) {
+			t.Fatalf("err = %v, want ErrScanBudgetExceeded", err)
+		}
+		if spy.totalEntitiesRead > 4 {
+			t.Fatalf("totalEntitiesRead = %d, want <= MaxScanEntities (4)", spy.totalEntitiesRead)
+		}
+
+		// With AllowTruncation, partial results are returned and totalEntitiesRead <= MaxScanEntities.
+		spyTrunc := &scanCountingReader{GraphReader: mr}
+		execTrunc := NewExecutor(spyTrunc, Config{
+			Mapper:          mapper,
+			MaxScanEntities: 4,
+			AllowTruncation: true,
+		})
+		resTrunc, err := execTrunc.ExecuteQuery(context.Background(), `
+			PREFIX ex: <https://example.org/onto#>
+			SELECT ?s ?cs WHERE { ?s ex:callsign ?cs }
+			ORDER BY ?s
+		`)
+		if err != nil {
+			t.Fatalf("ExecuteQuery with AllowTruncation: %v", err)
+		}
+		if !resTrunc.Truncated || resTrunc.TruncationReason != TruncationReasonScanBudget {
+			t.Fatalf("Truncated=%v Reason=%q, want true/%q", resTrunc.Truncated, resTrunc.TruncationReason, TruncationReasonScanBudget)
+		}
+		if len(resTrunc.Solutions) != 4 || spyTrunc.totalEntitiesRead != 4 || resTrunc.EntitiesScanned != 4 {
+			t.Fatalf("len(Solutions)=%d totalRead=%d EntitiesScanned=%d, want 4/4/4",
+				len(resTrunc.Solutions), spyTrunc.totalEntitiesRead, resTrunc.EntitiesScanned)
+		}
+	})
+
+	t.Run("context deadline expiring mid-evaluation returns ErrQueryTimeout (H5)", func(t *testing.T) {
+		slowReader := &scanCountingReader{
+			GraphReader:  mr,
+			delayPerCall: 25 * time.Millisecond,
+		}
+		exec := NewExecutor(slowReader, Config{
+			Mapper:  mapper,
+			Timeout: 35 * time.Millisecond,
+		})
+		_, err := exec.ExecuteQuery(context.Background(), `
+			PREFIX ex: <https://example.org/onto#>
+			SELECT ?s ?cs ?p WHERE {
+				{ ?s ex:callsign ?cs }
+				UNION
+				{ ?s ex:priority ?p }
+			}
+		`)
+		if !errors.Is(err, ErrQueryTimeout) {
+			t.Fatalf("mid-eval timeout err = %v, want ErrQueryTimeout", err)
+		}
+	})
+
+	t.Run("literals containing quote-at and quote-caret-caret sequences round-trip in SELECT and FILTER (H2)", func(t *testing.T) {
+		const idTricky = "c360.ops.uas1.intel.platform.tricky"
+		litAt := `say "@bob" now`
+		litCaret := `value "^^<https://example.org/dt>" end`
+		mrTricky := mustMemoryReader(t, graph.EntityState{
+			ID: idTricky,
+			Triples: []message.Triple{
+				{Subject: idTricky, Predicate: "c360.intel.callsign", Object: litAt},
+				{Subject: idTricky, Predicate: "c360.intel.note", Object: litCaret},
+			},
+		})
+		execTricky := NewExecutor(mrTricky, Config{Mapper: mapper})
+		res, err := execTricky.ExecuteQuery(context.Background(), `
+			PREFIX ex: <https://example.org/onto#>
+			SELECT ?cs ?note WHERE {
+				?s ex:callsign ?cs ;
+				   ex:note ?note .
+				FILTER(DATATYPE(?cs) = <http://www.w3.org/2001/XMLSchema#string> && LANG(?cs) = "")
+			}
+		`)
+		if err != nil {
+			t.Fatalf("ExecuteQuery tricky literals: %v", err)
+		}
+		if len(res.Solutions) != 1 {
+			t.Fatalf("len(Solutions) = %d, want 1: %+v", len(res.Solutions), res.Solutions)
+		}
+		if res.Solutions[0]["cs"].Value != litAt || res.Solutions[0]["cs"].Language != "" {
+			t.Fatalf("?cs = %+v, want Value=%q Language=\"\"", res.Solutions[0]["cs"], litAt)
+		}
+		if res.Solutions[0]["note"].Value != litCaret || res.Solutions[0]["note"].Datatype != XSDStringIRI {
+			t.Fatalf("?note = %+v, want Value=%q Datatype=xsd:string", res.Solutions[0]["note"], litCaret)
+		}
+	})
+
+	t.Run("SELECT DISTINCT enforces MaxResults after deduplication and ASK short-circuits after first match", func(t *testing.T) {
+		const (
+			id1 = "c360.ops.uas1.intel.platform.n1"
+			id2 = "c360.ops.uas1.intel.platform.n2"
+			id3 = "c360.ops.uas1.intel.platform.n3"
+		)
+		mrDup := mustMemoryReader(t,
+			graph.EntityState{ID: id1, Triples: []message.Triple{{Subject: id1, Predicate: "c360.intel.callsign", Object: "SAME"}}},
+			graph.EntityState{ID: id2, Triples: []message.Triple{{Subject: id2, Predicate: "c360.intel.callsign", Object: "SAME"}}},
+			graph.EntityState{ID: id3, Triples: []message.Triple{{Subject: id3, Predicate: "c360.intel.callsign", Object: "SAME"}}},
+		)
+		execDist := NewExecutor(mrDup, Config{
+			Mapper:     mapper,
+			MaxResults: 1,
+		})
+		// 3 entities bind ?cs="SAME", but SELECT DISTINCT ?cs produces 1 deduplicated row <= MaxResults(1).
+		resDist, err := execDist.ExecuteQuery(context.Background(), `
+			PREFIX ex: <https://example.org/onto#>
+			SELECT DISTINCT ?cs WHERE { ?s ex:callsign ?cs }
+		`)
+		if err != nil {
+			t.Fatalf("SELECT DISTINCT within post-distinct MaxResults failed: %v", err)
+		}
+		if len(resDist.Solutions) != 1 || resDist.Solutions[0]["cs"].Value != "SAME" {
+			t.Fatalf("SELECT DISTINCT solutions = %+v, want 1 row [SAME]", resDist.Solutions)
+		}
+
+		// ASK with MaxResults=1 succeeds on a multi-entity match without ErrResultLimitExceeded.
+		resAsk, err := execDist.ExecuteQuery(context.Background(), `
+			PREFIX ex: <https://example.org/onto#>
+			ASK WHERE { ?s ex:callsign ?cs }
+		`)
+		if err != nil || !resAsk.AskResult {
+			t.Fatalf("ASK with MaxResults=1: res=%+v err=%v, want true/nil", resAsk, err)
+		}
+	})
+
+	t.Run("compareTermsTotalOrder is strictly transitive across mixed datatypes", func(t *testing.T) {
+		terms := []Term{
+			{Kind: TermBlankNode, Value: "_:b1"},
+			{Kind: TermIRI, Value: "https://example.org/a"},
+			{Kind: TermLiteral, Value: "10", Datatype: XSDStringIRI},
+			{Kind: TermLiteral, Value: "2", Datatype: XSDStringIRI},
+			{Kind: TermLiteral, Value: "hello", Language: "en", Datatype: RDFLangStringIRI},
+			{Kind: TermLiteral, Value: "hello", Language: "fr", Datatype: RDFLangStringIRI},
+			{Kind: TermLiteral, Value: "2", Datatype: XSDIntegerIRI},
+			{Kind: TermLiteral, Value: "10", Datatype: XSDIntegerIRI},
+			{Kind: TermLiteral, Value: "2.5", Datatype: XSDDoubleIRI},
+			{Kind: TermLiteral, Value: "false", Datatype: XSDBooleanIRI},
+			{Kind: TermLiteral, Value: "true", Datatype: XSDBooleanIRI},
+			{Kind: TermLiteral, Value: "2026-10-15T08:00:00Z", Datatype: XSDDateTimeIRI},
+			{Kind: TermLiteral, Value: "2026-10-15T12:00:00Z", Datatype: XSDDateTimeIRI},
+			{Kind: TermLiteral, Value: `{"a":1}`, Datatype: "http://www.w3.org/1999/02/22-rdf-syntax-ns#JSON"},
+		}
+		for i := range terms {
+			for j := range terms {
+				cij := compareTermsTotalOrder(terms[i], true, terms[j], true)
+				cji := compareTermsTotalOrder(terms[j], true, terms[i], true)
+				if cij != -cji {
+					t.Fatalf("antisymmetry violated for (%+v, %+v): %d vs %d", terms[i], terms[j], cij, cji)
+				}
+				for k := range terms {
+					cjk := compareTermsTotalOrder(terms[j], true, terms[k], true)
+					cik := compareTermsTotalOrder(terms[i], true, terms[k], true)
+					if cij < 0 && cjk < 0 && cik >= 0 {
+						t.Fatalf("transitivity violated for:\n  i=%+v\n  j=%+v\n  k=%+v\n  cij=%d cjk=%d cik=%d",
+							terms[i], terms[j], terms[k], cij, cjk, cik)
+					}
+				}
+			}
 		}
 	})
 }

@@ -81,7 +81,7 @@ tasks:
       - 'scripts/gopkgs.sh go test -count=5 -cpu 1 -shuffle=on {{.CLI_ARGS | default "./..."}}'
 
   test:integration:
-    desc: Run Docker-backed tests with plain go test, shuffled, two packages at a time; on a pass, record the tree it measured for cover:check; -- <pkgs> to focus
+    desc: Run -tags=integration tests (live in-process NATS JetStream + graph-ingest) with go test, shuffled, two packages at a time; on a pass, record the tree it measured for cover:check; -- <pkgs> to focus
     cmds:
       # Task stops at the first failing command, so the fingerprint exists only after go test passed.
       - rm -f coverage/integration.tree && mkdir -p coverage

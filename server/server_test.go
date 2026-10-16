@@ -17,7 +17,9 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/c360studio/semengine/graph"
@@ -796,16 +798,41 @@ func TestServerAuthAndBindValidation(t *testing.T) {
 		}
 	}
 
-	// 3. Non-local bind with mTLS ClientAuth + ClientCAs succeeds.
-	mtlsCfg := &tls.Config{
+	// 3. Non-local bind with mTLS ClientAuth + ClientCAs but no server certificate is refused.
+	mtlsNoServerCert := &tls.Config{
 		ClientAuth: tls.RequireAndVerifyClientCert,
 		ClientCAs:  x509.NewCertPool(),
+	}
+	if _, err := New(mr, Config{BindAddress: "0.0.0.0:8080", TLSConfig: mtlsNoServerCert}); err == nil {
+		t.Fatal("New with mTLS missing server certificate succeeded, want error")
+	}
+
+	// Non-local bind with mTLS ClientAuth + ClientCAs + server certificate succeeds.
+	mtlsCfg := &tls.Config{
+		Certificates: []tls.Certificate{{}},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    x509.NewCertPool(),
 	}
 	if _, err := New(mr, Config{BindAddress: "0.0.0.0:8080", TLSConfig: mtlsCfg}); err != nil {
 		t.Fatalf("New with mTLS = %v, want nil", err)
 	}
 
-	// 4. Non-local bind with BearerToken succeeds and enforces Authorization: Bearer <token>.
+	// Negative limits and invalid BaseIRI are rejected by ValidateConfig / New.
+	for _, badCfg := range []Config{
+		{BaseIRI: "not-a-valid-http-iri"},
+		{BaseIRI: "https://bad>base.example"},
+		{QueryTimeout: -time.Second},
+		{MaxResults: -1},
+		{MaxScanEntities: -1},
+		{MaxQueryBytes: -1},
+		{MaxExportBytes: -1},
+	} {
+		if _, err := New(mr, badCfg); err == nil {
+			t.Fatalf("New(%+v) = nil, want validation error", badCfg)
+		}
+	}
+
+	// 4. Non-local bind with BearerToken succeeds and enforces Authorization: Bearer <token> (case-insensitive scheme).
 	srv, err := New(mr, Config{
 		BindAddress: "0.0.0.0:8080",
 		BearerToken: "secret-token-123",
@@ -826,16 +853,18 @@ func TestServerAuthAndBindValidation(t *testing.T) {
 		t.Fatalf("unauth status = %d, want 401", respUnauth.StatusCode)
 	}
 
-	// Authenticated request -> 200 OK.
-	reqAuth, _ := http.NewRequest(http.MethodGet, ts.URL+"/sparql?query=ASK%7B%7D", nil)
-	reqAuth.Header.Set("Authorization", "Bearer secret-token-123")
-	respAuth, err := ts.Client().Do(reqAuth)
-	if err != nil {
-		t.Fatalf("Do auth: %v", err)
-	}
-	respAuth.Body.Close()
-	if respAuth.StatusCode != http.StatusOK {
-		t.Fatalf("auth status = %d, want 200", respAuth.StatusCode)
+	// Authenticated request (including lowercase "bearer" scheme) -> 200 OK.
+	for _, hdr := range []string{"Bearer secret-token-123", "bearer secret-token-123"} {
+		reqAuth, _ := http.NewRequest(http.MethodGet, ts.URL+"/sparql?query=ASK%7B%7D", nil)
+		reqAuth.Header.Set("Authorization", hdr)
+		respAuth, err := ts.Client().Do(reqAuth)
+		if err != nil {
+			t.Fatalf("Do auth (%s): %v", hdr, err)
+		}
+		respAuth.Body.Close()
+		if respAuth.StatusCode != http.StatusOK {
+			t.Fatalf("auth (%s) status = %d, want 200", hdr, respAuth.StatusCode)
+		}
 	}
 
 	// 5. Incomplete registered entity-type superclass closure fails server.New at startup.
@@ -928,6 +957,103 @@ func TestRequestCancellationAndServeLifecycle(t *testing.T) {
 	}
 }
 
+type pipeListener struct {
+	conns  chan net.Conn
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newPipeListener() *pipeListener {
+	return &pipeListener{
+		conns:  make(chan net.Conn),
+		closed: make(chan struct{}),
+	}
+}
+
+func (l *pipeListener) Accept() (net.Conn, error) {
+	select {
+	case <-l.closed:
+		return nil, net.ErrClosed
+	case c := <-l.conns:
+		return c, nil
+	}
+}
+
+func (l *pipeListener) Close() error {
+	l.once.Do(func() {
+		close(l.closed)
+	})
+	return nil
+}
+
+func (l *pipeListener) Addr() net.Addr {
+	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8080}
+}
+
+func (l *pipeListener) dial(ctx context.Context) (net.Conn, error) {
+	c1, c2 := net.Pipe()
+	select {
+	case <-l.closed:
+		_ = c1.Close()
+		_ = c2.Close()
+		return nil, net.ErrClosed
+	case <-ctx.Done():
+		_ = c1.Close()
+		_ = c2.Close()
+		return nil, ctx.Err()
+	case l.conns <- c2:
+		return c1, nil
+	}
+}
+
+func TestServerServeAndShutdownInSynctestBubble(t *testing.T) {
+	defer registerServerTestVocab(t)()
+
+	synctest.Test(t, func(t *testing.T) {
+		mr := newTestFixtureReader(t)
+		srv, err := New(mr, Config{BaseIRI: testBaseIRI})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+
+		ln := newPipeListener()
+		serveCtx, serveCancel := context.WithCancel(t.Context())
+		serveErrCh := make(chan error, 1)
+		go func() {
+			serveErrCh <- srv.Serve(serveCtx, ln)
+		}()
+
+		client := &http.Client{
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					return ln.dial(ctx)
+				},
+				DisableKeepAlives: true,
+			},
+		}
+
+		resp, err := client.Get("http://pipe.local/sparql?query=" + url.QueryEscape(`PREFIX ex: <https://example.org/onto#> ASK WHERE { ?s ex:callsign "ALPHA-1" }`))
+		if err != nil {
+			t.Fatalf("GET /sparql over pipe listener: %v", err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"boolean":true`) {
+			t.Fatalf("status=%d body=%s, want 200 boolean:true", resp.StatusCode, string(body))
+		}
+
+		serveCancel()
+		synctest.Wait()
+
+		if err := <-serveErrCh; err != nil {
+			t.Fatalf("Serve exit err = %v, want nil", err)
+		}
+	})
+}
+
 func FuzzSPARQLHTTPRequest(f *testing.F) {
 	seeds := []struct {
 		method      string
@@ -950,15 +1076,28 @@ func FuzzSPARQLHTTPRequest(f *testing.F) {
 		f.Add(s.method, s.rawQuery, s.contentType, s.body, s.accept)
 	}
 
-	mr, err := reader.NewMemoryReader()
-	if err != nil {
-		f.Fatalf("NewMemoryReader: %v", err)
-	}
-	srv, err := New(mr, Config{BaseIRI: testBaseIRI})
+	defer registerServerTestVocab(f)()
+	mr := newTestFixtureReader(f)
+	srv, err := New(mr, Config{
+		BaseIRI:         testBaseIRI,
+		MaxResults:      4,
+		MaxScanEntities: 4,
+		MaxQueryBytes:   512,
+		MaxExportBytes:  512,
+	})
 	if err != nil {
 		f.Fatalf("New: %v", err)
 	}
 	handler := srv.Handler()
+	knownMediaTypes := []string{
+		MediaTypeSPARQLJSON,
+		MediaTypeSPARQLXML,
+		MediaTypeCSV,
+		MediaTypeTSV,
+		MediaTypeTurtle,
+		MediaTypeNTriples,
+		MediaTypeJSONLD,
+	}
 
 	f.Fuzz(func(t *testing.T, method, rawQuery, contentType, body, accept string) {
 		switch method {
@@ -976,8 +1115,43 @@ func FuzzSPARQLHTTPRequest(f *testing.F) {
 		}
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
-		if rec.Code == 0 {
-			t.Fatal("recorder status code is 0")
+
+		switch rec.Code {
+		case http.StatusOK:
+			ct := rec.Header().Get("Content-Type")
+			matchedCT := false
+			for _, mt := range knownMediaTypes {
+				if strings.HasPrefix(ct, mt) {
+					matchedCT = true
+					break
+				}
+			}
+			if !matchedCT {
+				t.Fatalf("200 OK returned unknown Content-Type %q", ct)
+			}
+			if rec.Header().Get(HeaderTruncated) != "" {
+				t.Fatalf("200 OK set %s without %s request header", HeaderTruncated, HeaderAllowTruncation)
+			}
+		case http.StatusBadRequest,
+			http.StatusMethodNotAllowed,
+			http.StatusNotAcceptable,
+			http.StatusRequestEntityTooLarge,
+			http.StatusUnprocessableEntity,
+			http.StatusInternalServerError,
+			http.StatusServiceUnavailable,
+			http.StatusGatewayTimeout:
+			if !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
+				t.Fatalf("error status %d Content-Type = %q, want application/json", rec.Code, rec.Header().Get("Content-Type"))
+			}
+			var payload errorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("error status %d body failed JSON decode: %v (%q)", rec.Code, err, rec.Body.String())
+			}
+			if payload.Error == "" || payload.Message == "" {
+				t.Fatalf("error status %d payload missing error or message: %+v", rec.Code, payload)
+			}
+		default:
+			t.Fatalf("unexpected HTTP status code %d", rec.Code)
 		}
 	})
 }
@@ -1002,7 +1176,7 @@ func TestNegotiationSerializationAndServerEdgeCases(t *testing.T) {
 		}
 	}
 
-	// 2. NegotiateAccept weighted clauses, wildcards, graph forms, and invalid q values.
+	// 2. NegotiateAccept weighted clauses, wildcards, explicit q=0 exclusions, graph forms, and invalid q values.
 	f1, err := NegotiateAccept(2 /* QueryAsk */, "text/turtle;q=0.9, application/xml;q=0.8")
 	if err != nil || f1 != FormatSPARQLXML {
 		t.Fatalf("NegotiateAccept weighted ASK = (%v, %v), want FormatSPARQLXML", f1, err)
@@ -1010,6 +1184,13 @@ func TestNegotiationSerializationAndServerEdgeCases(t *testing.T) {
 	f2, err := NegotiateAccept(1 /* QuerySelect */, "text/*;q=0.4, */*;q=0.9")
 	if err != nil || f2 != FormatSPARQLJSON {
 		t.Fatalf("NegotiateAccept higher q wildcard = (%v, %v), want FormatSPARQLJSON", f2, err)
+	}
+	fq0, err := NegotiateAccept(1 /* QuerySelect */, "application/sparql-results+json;q=0, */*;q=0.8")
+	if err != nil || fq0 != FormatSPARQLXML {
+		t.Fatalf("NegotiateAccept explicit q=0 on JSON with wildcard = (%v, %v), want FormatSPARQLXML", fq0, err)
+	}
+	if _, err := NegotiateAccept(2 /* QueryAsk */, "application/sparql-results+json;q=0, application/sparql-results+xml;q=0, */*;q=0.8"); !errors.Is(err, ErrNotAcceptable) {
+		t.Fatalf("NegotiateAccept with all ASK formats excluded by q=0 = %v, want ErrNotAcceptable", err)
 	}
 	f3, err := NegotiateAccept(3 /* QueryConstruct */, "")
 	if err != nil || f3 != FormatTurtle {
@@ -1078,7 +1259,7 @@ func TestNegotiationSerializationAndServerEdgeCases(t *testing.T) {
 		t.Fatalf("TSV escaped body = %q", string(tsvBody))
 	}
 
-	// 4. Additional HTTP protocol validation branches (405 PUT, POST with URL query, missing/bad Content-Type, empty query).
+	// 4. Additional HTTP protocol validation branches (405 PUT with Allow header, POST with URL query, missing/bad Content-Type, empty query).
 	extraReqs := []struct {
 		name       string
 		method     string
@@ -1086,8 +1267,9 @@ func TestNegotiationSerializationAndServerEdgeCases(t *testing.T) {
 		ct         string
 		body       string
 		wantStatus int
+		wantAllow  string
 	}{
-		{name: "PUT method not allowed", method: http.MethodPut, target: "/sparql", wantStatus: http.StatusMethodNotAllowed},
+		{name: "PUT method not allowed", method: http.MethodPut, target: "/sparql", wantStatus: http.StatusMethodNotAllowed, wantAllow: "GET, POST"},
 		{name: "POST with URL query params", method: http.MethodPost, target: "/sparql?query=ASK%7B%7D", ct: "application/sparql-query", body: "ASK {}", wantStatus: http.StatusBadRequest},
 		{name: "POST missing Content-Type", method: http.MethodPost, target: "/sparql", ct: "", body: "ASK {}", wantStatus: http.StatusBadRequest},
 		{name: "POST malformed Content-Type", method: http.MethodPost, target: "/sparql", ct: "application/sparql-query; =", body: "ASK {}", wantStatus: http.StatusBadRequest},
@@ -1107,9 +1289,17 @@ func TestNegotiationSerializationAndServerEdgeCases(t *testing.T) {
 		if resp.StatusCode != tc.wantStatus {
 			t.Fatalf("%s: status = %d, want %d", tc.name, resp.StatusCode, tc.wantStatus)
 		}
+		if tc.wantAllow != "" && resp.Header.Get("Allow") != tc.wantAllow {
+			t.Fatalf("%s: Allow = %q, want %q", tc.name, resp.Header.Get("Allow"), tc.wantAllow)
+		}
 	}
 
 	// 5. Server constructor, ValidateConfig, Serve, and Shutdown edge cases.
+	checkServerLifecycleEdgeCases(t, srv)
+}
+
+func checkServerLifecycleEdgeCases(t *testing.T, srv *Server) {
+	t.Helper()
 	if _, err := New(nil, Config{}); err == nil {
 		t.Fatal("New(nil) = nil, want error")
 	}
@@ -1125,8 +1315,8 @@ func TestNegotiationSerializationAndServerEdgeCases(t *testing.T) {
 	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Second)
 	defer shutdownCancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		t.Fatalf("Shutdown before Serve = %v, want nil", err)
+	if err := srv.Shutdown(shutdownCtx); err == nil {
+		t.Fatal("Shutdown before Serve = nil, want error")
 	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -1245,27 +1435,29 @@ func TestEntityJSONLDAndExportRoutes(t *testing.T) {
 			}
 		}
 
-		// 406 Not Acceptable when Accept excludes application/ld+json.
-		req406, _ := http.NewRequest(http.MethodGet, ts.URL+"/entities/"+idAlpha+".jsonld", nil)
-		req406.Header.Set("Accept", MediaTypeTurtle)
-		resp406, err := ts.Client().Do(req406)
-		if err != nil {
-			t.Fatalf("Do 406: %v", err)
-		}
-		resp406.Body.Close()
-		if resp406.StatusCode != http.StatusNotAcceptable {
-			t.Fatalf("entity JSON-LD with Accept=text/turtle status = %d, want 406", resp406.StatusCode)
+		// 406 Not Acceptable when Accept excludes application/ld+json (including explicit q=0 with wildcard).
+		for _, badAccept := range []string{MediaTypeTurtle, "application/ld+json;q=0, */*;q=0.8"} {
+			req406, _ := http.NewRequest(http.MethodGet, ts.URL+"/entities/"+idAlpha+".jsonld", nil)
+			req406.Header.Set("Accept", badAccept)
+			resp406, err := ts.Client().Do(req406)
+			if err != nil {
+				t.Fatalf("Do 406 (%s): %v", badAccept, err)
+			}
+			resp406.Body.Close()
+			if resp406.StatusCode != http.StatusNotAcceptable {
+				t.Fatalf("entity JSON-LD with Accept=%q status = %d, want 406", badAccept, resp406.StatusCode)
+			}
 		}
 
-		// 405 Method Not Allowed on POST.
+		// 405 Method Not Allowed on POST with Allow: GET.
 		req405, _ := http.NewRequest(http.MethodPost, ts.URL+"/entities/"+idAlpha+".jsonld", strings.NewReader("{}"))
 		resp405, err := ts.Client().Do(req405)
 		if err != nil {
 			t.Fatalf("Do 405: %v", err)
 		}
 		resp405.Body.Close()
-		if resp405.StatusCode != http.StatusMethodNotAllowed {
-			t.Fatalf("POST /entities/*.jsonld status = %d, want 405", resp405.StatusCode)
+		if resp405.StatusCode != http.StatusMethodNotAllowed || resp405.Header.Get("Allow") != "GET" {
+			t.Fatalf("POST /entities/*.jsonld status = %d Allow = %q, want 405 Allow=GET", resp405.StatusCode, resp405.Header.Get("Allow"))
 		}
 	})
 
@@ -1314,6 +1506,29 @@ func TestEntityJSONLDAndExportRoutes(t *testing.T) {
 			}
 		}
 
+		// POST /export with prefix exceeding MaxScanEntities=1 returns bounded partial non-empty graph when X-Semsparql-Allow-Truncation: true is set.
+		smallScanSrv, err := New(mr, Config{
+			BaseIRI:         testBaseIRI,
+			MaxScanEntities: 1,
+		})
+		if err != nil {
+			t.Fatalf("New smallScanSrv: %v", err)
+		}
+		recScan := httptest.NewRecorder()
+		reqScan := httptest.NewRequest(http.MethodPost, "/export", strings.NewReader(`{"prefix":"c360.ops.uas1.intel.platform"}`))
+		reqScan.Header.Set("Content-Type", "application/json")
+		reqScan.Header.Set("Accept", MediaTypeNTriples)
+		reqScan.Header.Set(HeaderAllowTruncation, "true")
+		smallScanSrv.Handler().ServeHTTP(recScan, reqScan)
+		if recScan.Code != http.StatusOK ||
+			recScan.Header().Get(HeaderTruncated) != "true" ||
+			recScan.Header().Get(HeaderTruncationReason) != sparql.TruncationReasonScanBudget ||
+			!strings.Contains(recScan.Body.String(), "ALPHA-1") ||
+			strings.Contains(recScan.Body.String(), "BRAVO-2") {
+			t.Fatalf("POST /export scan_budget truncation: code=%d Truncated=%q Reason=%q body=%q",
+				recScan.Code, recScan.Header().Get(HeaderTruncated), recScan.Header().Get(HeaderTruncationReason), recScan.Body.String())
+		}
+
 		// Missing 6-part exact entity prefix returns 200 OK with empty graph.
 		reqMissing, _ := http.NewRequest(http.MethodPost, ts.URL+"/export", strings.NewReader(`{"prefix":"c360.ops.uas1.intel.platform.missing"}`))
 		reqMissing.Header.Set("Content-Type", "application/json")
@@ -1328,7 +1543,7 @@ func TestEntityJSONLDAndExportRoutes(t *testing.T) {
 			t.Fatalf("POST /export missing exact prefix status=%d body=%q, want 200 empty", respMissing.StatusCode, string(outMissing))
 		}
 
-		// GET /export.ttl is not registered (404 Not Found), and GET /export returns 405 Method Not Allowed.
+		// GET /export.ttl is not registered (404 Not Found), and GET /export returns 405 Method Not Allowed with Allow: POST.
 		respTTL, err := ts.Client().Get(ts.URL + "/export.ttl")
 		if err != nil {
 			t.Fatalf("Get /export.ttl: %v", err)
@@ -1343,8 +1558,8 @@ func TestEntityJSONLDAndExportRoutes(t *testing.T) {
 			t.Fatalf("Get /export: %v", err)
 		}
 		respGetExport.Body.Close()
-		if respGetExport.StatusCode != http.StatusMethodNotAllowed {
-			t.Fatalf("GET /export status = %d, want 405", respGetExport.StatusCode)
+		if respGetExport.StatusCode != http.StatusMethodNotAllowed || respGetExport.Header.Get("Allow") != "POST" {
+			t.Fatalf("GET /export status = %d Allow = %q, want 405 Allow=POST", respGetExport.StatusCode, respGetExport.Header.Get("Allow"))
 		}
 
 		// Invalid POST /export requests -> 400 Bad Request or 406 Not Acceptable.
@@ -1363,6 +1578,7 @@ func TestEntityJSONLDAndExportRoutes(t *testing.T) {
 			{name: "both prefix and construct", ct: "application/json", body: `{"prefix":"c360.ops","construct":"CONSTRUCT WHERE { ?s ?p ?o }"}`, wantStatus: http.StatusBadRequest},
 			{name: "wildcard in prefix", ct: "application/json", body: `{"prefix":"c360.ops.*"}`, wantStatus: http.StatusBadRequest},
 			{name: "trailing dot in prefix", ct: "application/json", body: `{"prefix":"c360.ops."}`, wantStatus: http.StatusBadRequest},
+			{name: "whitespace around prefix", ct: "application/json", body: `{"prefix":" c360.ops "}`, wantStatus: http.StatusBadRequest},
 			{name: "7-part prefix", ct: "application/json", body: `{"prefix":"a.b.c.d.e.f.g"}`, wantStatus: http.StatusBadRequest},
 			{name: "empty segment in prefix", ct: "application/json", body: `{"prefix":"c360..ops"}`, wantStatus: http.StatusBadRequest},
 			{name: "SELECT in construct field", ct: "application/json", body: `{"construct":"SELECT ?s WHERE { ?s ?p ?o }"}`, wantStatus: http.StatusBadRequest},
@@ -1404,7 +1620,7 @@ func TestEntityJSONLDAndExportRoutes(t *testing.T) {
 		}
 	})
 
-	t.Run("Classified transient and fatal reader errors map to 503 and 500 with class and detail preserved", func(t *testing.T) {
+	t.Run("Classified transient, fatal, invalid, response_too_large, canceled, and unclassified reader errors map to expected HTTP statuses", func(t *testing.T) {
 		transientErr := &errs.ClassifiedError{
 			Class:     errs.ErrorTransient,
 			Err:       errors.New("kv store unavailable"),
@@ -1422,20 +1638,34 @@ func TestEntityJSONLDAndExportRoutes(t *testing.T) {
 			Message:   "server ignored pattern",
 			Code:      "pattern_capability_unsupported",
 		}
+		respTooLargeErr := &errs.ClassifiedError{
+			Class:   errs.ErrorInvalid,
+			Err:     errors.New("response exceeds active NATS maximum payload"),
+			Message: "response exceeds active NATS maximum payload",
+			Code:    "response_too_large",
+		}
+		invalidErr := &errs.ClassifiedError{
+			Class:   errs.ErrorInvalid,
+			Err:     errors.New("invalid selector"),
+			Message: "invalid selector",
+			Code:    "invalid_request",
+		}
 
 		for _, tc := range []struct {
-			name       string
-			readerErr  error
-			wantStatus int
-			wantCode   string
-			wantClass  string
+			name         string
+			readerErr    error
+			wantStatus   int
+			wantCode     string
+			wantClass    string
+			wantRetryHdr bool
 		}{
 			{
-				name:       "classified transient",
-				readerErr:  transientErr,
-				wantStatus: http.StatusServiceUnavailable,
-				wantCode:   "kv_transient",
-				wantClass:  errs.ErrorTransient.String(),
+				name:         "classified transient",
+				readerErr:    transientErr,
+				wantStatus:   http.StatusServiceUnavailable,
+				wantCode:     "kv_transient",
+				wantClass:    errs.ErrorTransient.String(),
+				wantRetryHdr: true,
 			},
 			{
 				name:       "classified fatal",
@@ -1443,6 +1673,34 @@ func TestEntityJSONLDAndExportRoutes(t *testing.T) {
 				wantStatus: http.StatusInternalServerError,
 				wantCode:   "pattern_capability_unsupported",
 				wantClass:  errs.ErrorFatal.String(),
+			},
+			{
+				name:         "response_too_large maps to 503",
+				readerErr:    respTooLargeErr,
+				wantStatus:   http.StatusServiceUnavailable,
+				wantCode:     "response_too_large",
+				wantClass:    errs.ErrorInvalid.String(),
+				wantRetryHdr: true,
+			},
+			{
+				name:       "classified invalid maps to 400",
+				readerErr:  invalidErr,
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "invalid_request",
+				wantClass:  errs.ErrorInvalid.String(),
+			},
+			{
+				name:         "context.Canceled maps to 503 with Retry-After",
+				readerErr:    context.Canceled,
+				wantStatus:   http.StatusServiceUnavailable,
+				wantCode:     "service_unavailable",
+				wantRetryHdr: true,
+			},
+			{
+				name:       "unclassified error maps to 500 internal_error",
+				readerErr:  errors.New("unexpected transport fault"),
+				wantStatus: http.StatusInternalServerError,
+				wantCode:   "internal_error",
 			},
 		} {
 			errReader := &errorInjectingReader{base: mr, scanErr: tc.readerErr}
@@ -1452,9 +1710,13 @@ func TestEntityJSONLDAndExportRoutes(t *testing.T) {
 			}
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodGet, "/sparql?query="+url.QueryEscape("SELECT ?s WHERE { ?s ?p ?o }"), nil)
+			req.Header.Set(HeaderAllowTruncation, "true")
 			errSrv.Handler().ServeHTTP(rec, req)
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("%s status = %d, want %d (%s)", tc.name, rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if tc.wantRetryHdr && rec.Header().Get("Retry-After") == "" {
+				t.Fatalf("%s missing Retry-After header", tc.name)
 			}
 			var payload errorResponse
 			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
@@ -1526,15 +1788,24 @@ func FuzzExportHTTPRequest(f *testing.F) {
 		f.Add(s.method, s.path, s.contentType, s.body, s.accept)
 	}
 
-	mr, err := reader.NewMemoryReader()
-	if err != nil {
-		f.Fatalf("NewMemoryReader: %v", err)
-	}
-	srv, err := New(mr, Config{BaseIRI: testBaseIRI})
+	defer registerServerTestVocab(f)()
+	mr := newTestFixtureReader(f)
+	srv, err := New(mr, Config{
+		BaseIRI:         testBaseIRI,
+		MaxResults:      4,
+		MaxScanEntities: 4,
+		MaxQueryBytes:   512,
+		MaxExportBytes:  512,
+	})
 	if err != nil {
 		f.Fatalf("New: %v", err)
 	}
 	handler := srv.Handler()
+	graphMediaTypes := []string{
+		MediaTypeTurtle,
+		MediaTypeNTriples,
+		MediaTypeJSONLD,
+	}
 
 	f.Fuzz(func(t *testing.T, method, path, contentType, body, accept string) {
 		switch method {
@@ -1555,8 +1826,45 @@ func FuzzExportHTTPRequest(f *testing.F) {
 		}
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
-		if rec.Code == 0 {
-			t.Fatal("recorder status code is 0")
+
+		switch rec.Code {
+		case http.StatusOK:
+			ct := rec.Header().Get("Content-Type")
+			matchedCT := false
+			for _, mt := range graphMediaTypes {
+				if strings.HasPrefix(ct, mt) {
+					matchedCT = true
+					break
+				}
+			}
+			if !matchedCT {
+				t.Fatalf("200 OK returned unknown Content-Type %q", ct)
+			}
+			if rec.Header().Get(HeaderTruncated) != "" {
+				t.Fatalf("200 OK set %s without %s request header", HeaderTruncated, HeaderAllowTruncation)
+			}
+		case http.StatusNotFound:
+			// Unregistered paths or missing /entities/{id}.jsonld return 404.
+		case http.StatusBadRequest,
+			http.StatusMethodNotAllowed,
+			http.StatusNotAcceptable,
+			http.StatusRequestEntityTooLarge,
+			http.StatusUnprocessableEntity,
+			http.StatusInternalServerError,
+			http.StatusServiceUnavailable,
+			http.StatusGatewayTimeout:
+			if !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
+				t.Fatalf("error status %d Content-Type = %q, want application/json", rec.Code, rec.Header().Get("Content-Type"))
+			}
+			var payload errorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("error status %d body failed JSON decode: %v (%q)", rec.Code, err, rec.Body.String())
+			}
+			if payload.Error == "" || payload.Message == "" {
+				t.Fatalf("error status %d payload missing error or message: %+v", rec.Code, payload)
+			}
+		default:
+			t.Fatalf("unexpected HTTP status code %d", rec.Code)
 		}
 	})
 }

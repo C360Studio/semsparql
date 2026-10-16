@@ -747,12 +747,18 @@ func isHexByte(b byte) bool {
 	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
 }
 
+const maxParserNestingDepth = 128
+
 type parser struct {
-	tokens    []token
-	pos       int
-	query     *Query
-	baseURL   *url.URL
-	anonCount int
+	tokens     []token
+	pos        int
+	query      *Query
+	baseURL    *url.URL
+	anonCount  int
+	groupDepth int
+	bnodeDepth int
+	exprDepth  int
+	pathDepth  int
 }
 
 func (p *parser) cur() token {
@@ -1095,6 +1101,8 @@ func (p *parser) parseConstructTemplate() ([]TriplePattern, error) {
 		triples = append(triples, block...)
 		if p.cur().kind == tokDot {
 			p.next()
+		} else if p.cur().kind != tokRBrace {
+			return nil, syntaxErrorf(p.cur().pos, "expected '.' or '}' after triple in CONSTRUCT template, got %q", p.cur().value)
 		}
 	}
 	if _, err := p.expect(tokRBrace, "'}' after CONSTRUCT template"); err != nil {
@@ -1172,7 +1180,26 @@ func (p *parser) checkDatasetClause() error {
 	return nil
 }
 
+func (p *parser) isGraphPatternKeyword() bool {
+	if p.cur().kind != tokIdent {
+		return false
+	}
+	upper := strings.ToUpper(p.cur().value)
+	switch upper {
+	case "OPTIONAL", "FILTER", "SERVICE", "GRAPH", "BIND", "VALUES", "MINUS", "SELECT":
+		return true
+	default:
+		return isUpdateKeyword(upper)
+	}
+}
+
 func (p *parser) parseGroupGraphPattern() (GroupPattern, error) {
+	p.groupDepth++
+	defer func() { p.groupDepth-- }()
+	if p.groupDepth > maxParserNestingDepth {
+		return GroupPattern{}, syntaxErrorf(p.cur().pos, "group graph pattern nesting depth exceeds maximum of %d", maxParserNestingDepth)
+	}
+
 	if _, err := p.expect(tokLBrace, "'{'"); err != nil {
 		return GroupPattern{}, err
 	}
@@ -1270,6 +1297,8 @@ func (p *parser) parseGroupGraphPattern() (GroupPattern, error) {
 		pendingTriples = append(pendingTriples, triples...)
 		if p.cur().kind == tokDot {
 			p.next()
+		} else if p.cur().kind != tokRBrace && p.cur().kind != tokLBrace && !p.isGraphPatternKeyword() {
+			return GroupPattern{}, syntaxErrorf(p.cur().pos, "expected '.' after triple pattern before %q", p.cur().value)
 		}
 	}
 
@@ -1292,7 +1321,7 @@ func (p *parser) parseTriplesSameSubject(inTemplate bool) ([]TriplePattern, erro
 		triples = append(triples, preTriples...)
 		// A blank node property list `[ :p :o ]` at subject position may stand alone
 		// or be followed by a predicate-object list.
-		if p.cur().kind == tokDot || p.cur().kind == tokRBrace {
+		if p.cur().kind == tokDot || p.cur().kind == tokRBrace || p.cur().kind == tokLBrace || p.isGraphPatternKeyword() {
 			if len(triples) == 0 {
 				return nil, syntaxErrorf(p.cur().pos, "standalone '[]' requires a predicate and object")
 			}
@@ -1319,6 +1348,12 @@ func (p *parser) parseTriplesSameSubject(inTemplate bool) ([]TriplePattern, erro
 }
 
 func (p *parser) parseBlankNodePropertyList(inTemplate bool) (Term, []TriplePattern, error) {
+	p.bnodeDepth++
+	defer func() { p.bnodeDepth-- }()
+	if p.bnodeDepth > maxParserNestingDepth {
+		return Term{}, nil, syntaxErrorf(p.cur().pos, "blank node property list nesting depth exceeds maximum of %d", maxParserNestingDepth)
+	}
+
 	openTok, err := p.expect(tokLBracket, "'['")
 	if err != nil {
 		return Term{}, nil, err
@@ -1698,6 +1733,11 @@ func (p *parser) parsePathPrimary(startPos int) (pathExpr, error) {
 		}
 		return pathIRI{iri: resolved}, nil
 	case tokLParen:
+		p.pathDepth++
+		defer func() { p.pathDepth-- }()
+		if p.pathDepth > maxParserNestingDepth {
+			return nil, syntaxErrorf(tok.pos, "property path nesting depth exceeds maximum of %d", maxParserNestingDepth)
+		}
 		p.next()
 		inner, err := p.parsePathAlternative(startPos)
 		if err != nil {
@@ -1724,6 +1764,11 @@ func (p *parser) parseFilterConstraint() (FilterExpr, error) {
 }
 
 func (p *parser) parseBrackettedExpression() (FilterExpr, error) {
+	p.exprDepth++
+	defer func() { p.exprDepth-- }()
+	if p.exprDepth > maxParserNestingDepth {
+		return nil, syntaxErrorf(p.cur().pos, "expression nesting depth exceeds maximum of %d", maxParserNestingDepth)
+	}
 	if _, err := p.expect(tokLParen, "'('"); err != nil {
 		return nil, err
 	}
@@ -1769,12 +1814,24 @@ func (p *parser) parseAndExpr() (FilterExpr, error) {
 	return left, nil
 }
 
+func checkUnsupportedArithmeticToken(tok token) error {
+	switch tok.kind {
+	case tokPlus, tokMinus, tokStar, tokSlash:
+		return unsupportedErrorf(tok.pos, "arithmetic expression ("+tok.value+")", "arithmetic operators are not supported in FILTER")
+	default:
+		return nil
+	}
+}
+
 func (p *parser) parseComparisonExpr() (FilterExpr, error) {
 	left, err := p.parseUnaryExpr()
 	if err != nil {
 		return nil, err
 	}
 	tok := p.cur()
+	if err := checkUnsupportedArithmeticToken(tok); err != nil {
+		return nil, err
+	}
 	if tok.kind == tokIdent {
 		upper := strings.ToUpper(tok.value)
 		if upper == "IN" {
@@ -1806,10 +1863,18 @@ func (p *parser) parseComparisonExpr() (FilterExpr, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := checkUnsupportedArithmeticToken(p.cur()); err != nil {
+		return nil, err
+	}
 	return BinaryExpr{Op: op, Left: left, Right: right}, nil
 }
 
 func (p *parser) parseUnaryExpr() (FilterExpr, error) {
+	p.exprDepth++
+	defer func() { p.exprDepth-- }()
+	if p.exprDepth > maxParserNestingDepth {
+		return nil, syntaxErrorf(p.cur().pos, "expression nesting depth exceeds maximum of %d", maxParserNestingDepth)
+	}
 	tok := p.cur()
 	switch tok.kind {
 	case tokBang:
@@ -1843,7 +1908,9 @@ func (p *parser) parsePrimaryExpr() (FilterExpr, error) {
 	switch tok.kind {
 	case tokLParen:
 		return p.parseBrackettedExpression()
-	case tokVar, tokBlankNode, tokString, tokInteger, tokDecimal, tokDouble:
+	case tokBlankNode, tokLBracket:
+		return nil, syntaxErrorf(tok.pos, "blank node %q is not allowed in FILTER or ORDER BY expression", tok.value)
+	case tokVar, tokString, tokInteger, tokDecimal, tokDouble:
 		term, err := p.parseObjectTerm()
 		if err != nil {
 			return nil, err
@@ -1923,7 +1990,10 @@ func (p *parser) parseBuiltinOrFunctionCall() (FilterExpr, error) {
 		return CallExpr{Func: fn, Args: args}, nil
 
 	default:
-		return nil, unsupportedErrorf(tok.pos, upper, "only BOUND, REGEX, STR, LANG, and DATATYPE are supported in FILTER")
+		if p.peek(1).kind == tokLParen {
+			return nil, unsupportedErrorf(tok.pos, upper, "only BOUND, REGEX, STR, LANG, and DATATYPE are supported in FILTER")
+		}
+		return nil, syntaxErrorf(tok.pos, "unexpected identifier %q in expression", tok.value)
 	}
 }
 

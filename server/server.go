@@ -43,11 +43,14 @@ var (
 	// bearer-token or mTLS client certificate authentication.
 	ErrUnsafeExposure = errors.New("server: non-local bind address requires BearerToken or mTLS client authentication")
 
-	// ErrQueryTooLarge indicates a SPARQL query exceeded MaxQueryBytes (HTTP 413 Content Too Large, D.1b).
-	ErrQueryTooLarge = errors.New("server: SPARQL query exceeds maximum byte limit")
+	// errQueryTooLarge indicates a SPARQL query exceeded MaxQueryBytes (HTTP 413 Content Too Large, D.1b).
+	errQueryTooLarge = errors.New("server: SPARQL query exceeds maximum byte limit")
 
-	// ErrExportBodyTooLarge indicates a POST /export request body exceeded MaxExportBytes (HTTP 413 Content Too Large, D.1b).
-	ErrExportBodyTooLarge = errors.New("server: export request body exceeds maximum byte limit")
+	// errExportBodyTooLarge indicates a POST /export request body exceeded MaxExportBytes (HTTP 413 Content Too Large, D.1b).
+	errExportBodyTooLarge = errors.New("server: export request body exceeds maximum byte limit")
+
+	// errServerNotRunning indicates Shutdown was called before Serve started an HTTP server.
+	errServerNotRunning = errors.New("server: Shutdown called before Serve")
 )
 
 // Config configures the SPARQL 1.1 HTTP Server.
@@ -63,8 +66,9 @@ type Config struct {
 	MaxExportBytes  int
 }
 
-// ValidateConfig verifies that the bind address is well-formed and that any
-// non-local bind is protected by a bearer token or mTLS client verification.
+// ValidateConfig verifies that the bind address, base IRI, TLS configuration,
+// and resource limits are well-formed and that any non-local bind is protected
+// by a bearer token or mTLS client verification with a server certificate.
 func ValidateConfig(cfg Config) error {
 	bind := cfg.BindAddress
 	if bind == "" {
@@ -73,6 +77,27 @@ func ValidateConfig(cfg Config) error {
 	host, _, err := net.SplitHostPort(bind)
 	if err != nil {
 		return fmt.Errorf("server: invalid bind address %q: %w", bind, err)
+	}
+	if err := irimap.ValidateBaseIRI(cfg.BaseIRI); err != nil {
+		return fmt.Errorf("server: %w", err)
+	}
+	if cfg.TLSConfig != nil && !hasServerCertificate(cfg.TLSConfig) {
+		return errors.New("server: TLSConfig requires Certificates or GetCertificate")
+	}
+	if cfg.QueryTimeout < 0 {
+		return fmt.Errorf("server: QueryTimeout must not be negative, got %s", cfg.QueryTimeout)
+	}
+	if cfg.MaxResults < 0 {
+		return fmt.Errorf("server: MaxResults must not be negative, got %d", cfg.MaxResults)
+	}
+	if cfg.MaxScanEntities < 0 {
+		return fmt.Errorf("server: MaxScanEntities must not be negative, got %d", cfg.MaxScanEntities)
+	}
+	if cfg.MaxQueryBytes < 0 {
+		return fmt.Errorf("server: MaxQueryBytes must not be negative, got %d", cfg.MaxQueryBytes)
+	}
+	if cfg.MaxExportBytes < 0 {
+		return fmt.Errorf("server: MaxExportBytes must not be negative, got %d", cfg.MaxExportBytes)
 	}
 	if !isLoopbackHost(host) && !hasAuthConfigured(cfg) {
 		return fmt.Errorf("%w: bind address %q", ErrUnsafeExposure, bind)
@@ -88,11 +113,15 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+func hasServerCertificate(tlsCfg *tls.Config) bool {
+	return tlsCfg != nil && (len(tlsCfg.Certificates) > 0 || tlsCfg.GetCertificate != nil)
+}
+
 func hasAuthConfigured(cfg Config) bool {
 	if strings.TrimSpace(cfg.BearerToken) != "" {
 		return true
 	}
-	if cfg.TLSConfig != nil &&
+	if hasServerCertificate(cfg.TLSConfig) &&
 		cfg.TLSConfig.ClientAuth >= tls.RequireAndVerifyClientCert &&
 		cfg.TLSConfig.ClientCAs != nil {
 		return true
@@ -117,17 +146,26 @@ func New(r reader.GraphReader, cfg Config) (*Server, error) {
 	if r == nil {
 		return nil, errors.New("server: nil GraphReader")
 	}
+	if err := ValidateConfig(cfg); err != nil {
+		return nil, err
+	}
 	if cfg.BindAddress == "" {
 		cfg.BindAddress = DefaultBindAddress
 	}
-	if cfg.MaxQueryBytes <= 0 {
+	if cfg.QueryTimeout == 0 {
+		cfg.QueryTimeout = sparql.DefaultQueryTimeout
+	}
+	if cfg.MaxResults == 0 {
+		cfg.MaxResults = sparql.DefaultMaxResults
+	}
+	if cfg.MaxScanEntities == 0 {
+		cfg.MaxScanEntities = sparql.DefaultMaxScanEntities
+	}
+	if cfg.MaxQueryBytes == 0 {
 		cfg.MaxQueryBytes = DefaultMaxQueryBytes
 	}
-	if cfg.MaxExportBytes <= 0 {
+	if cfg.MaxExportBytes == 0 {
 		cfg.MaxExportBytes = DefaultMaxExportBytes
-	}
-	if err := ValidateConfig(cfg); err != nil {
-		return nil, err
 	}
 	if err := sparql.ValidateSuperclassClosure(); err != nil {
 		return nil, err
@@ -171,10 +209,14 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	if ln == nil {
 		return errors.New("server: nil net.Listener")
 	}
+	if s.cfg.TLSConfig != nil && !hasServerCertificate(s.cfg.TLSConfig) {
+		return errors.New("server: TLSConfig requires Certificates or GetCertificate")
+	}
 
 	httpSrv := &http.Server{
-		Handler:   s.Handler(),
-		TLSConfig: s.cfg.TLSConfig,
+		Handler:           s.Handler(),
+		TLSConfig:         s.cfg.TLSConfig,
+		ReadHeaderTimeout: 10 * time.Second,
 		BaseContext: func(net.Listener) context.Context {
 			return ctx
 		},
@@ -185,7 +227,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	s.mu.Unlock()
 
 	serveLn := ln
-	if s.cfg.TLSConfig != nil && (len(s.cfg.TLSConfig.Certificates) > 0 || s.cfg.TLSConfig.GetCertificate != nil) {
+	if s.cfg.TLSConfig != nil {
 		serveLn = tls.NewListener(ln, s.cfg.TLSConfig)
 	}
 
@@ -204,13 +246,14 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		_ = httpSrv.Shutdown(shutdownCtx)
-		return <-errCh
+		shutdownErr := s.Shutdown(shutdownCtx)
+		return errors.Join(<-errCh, shutdownErr)
 	}
 }
 
 // Shutdown gracefully stops the running HTTP server under ctx. A nil context is
-// refused with reader.ErrNilContext.
+// refused with reader.ErrNilContext, and calling Shutdown before Serve returns
+// an error.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if ctx == nil {
 		return reader.ErrNilContext
@@ -219,16 +262,18 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	httpSrv := s.httpSrv
 	s.mu.Unlock()
 	if httpSrv == nil {
-		return nil
+		return errServerNotRunning
 	}
 	return httpSrv.Shutdown(ctx)
 }
 
 func (s *Server) requireBearerAuth(next http.Handler) http.Handler {
-	expected := "Bearer " + strings.TrimSpace(s.cfg.BearerToken)
+	expectedToken := []byte(strings.TrimSpace(s.cfg.BearerToken))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got := strings.TrimSpace(r.Header.Get("Authorization"))
-		if subtle.ConstantTimeCompare([]byte(got), []byte(expected)) != 1 {
+		auth := strings.TrimSpace(r.Header.Get("Authorization"))
+		scheme, rest, ok := strings.Cut(auth, " ")
+		gotToken := strings.TrimSpace(rest)
+		if !ok || !strings.EqualFold(scheme, "Bearer") || subtle.ConstantTimeCompare([]byte(gotToken), expectedToken) != 1 {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="semsparql"`)
 			writeJSONError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
 			return
@@ -240,6 +285,9 @@ func (s *Server) requireBearerAuth(next http.Handler) http.Handler {
 func (s *Server) handleSPARQL(w http.ResponseWriter, r *http.Request) {
 	queryStr, status, code, err := s.extractSPARQLQuery(r)
 	if err != nil {
+		if status == http.StatusMethodNotAllowed {
+			w.Header().Set("Allow", "GET, POST")
+		}
 		writeJSONError(w, status, code, err.Error())
 		return
 	}
@@ -292,6 +340,7 @@ func (s *Server) handleSPARQL(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleEntityJSONLD(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
 		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", fmt.Sprintf("method %s not allowed on %s", r.Method, r.URL.Path))
 		return
 	}
@@ -319,11 +368,7 @@ func (s *Server) handleEntityJSONLD(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	timeout := s.cfg.QueryTimeout
-	if timeout <= 0 {
-		timeout = sparql.DefaultQueryTimeout
-	}
-	queryCtx, cancel := context.WithTimeout(r.Context(), timeout)
+	queryCtx, cancel := context.WithTimeout(r.Context(), s.cfg.QueryTimeout)
 	defer cancel()
 
 	ent, err := s.reader.GetEntity(queryCtx, entityID)
@@ -344,9 +389,6 @@ func (s *Server) handleEntityJSONLD(w http.ResponseWriter, r *http.Request) {
 
 	allowTruncation := strings.EqualFold(strings.TrimSpace(r.Header.Get(HeaderAllowTruncation)), "true")
 	maxResults := s.cfg.MaxResults
-	if maxResults <= 0 {
-		maxResults = sparql.DefaultMaxResults
-	}
 	truncated := false
 	truncReason := ""
 	if len(triples) > maxResults {
@@ -380,16 +422,8 @@ func acceptsJSONLD(acceptHeader string) bool {
 	if err != nil {
 		return false
 	}
-	for _, c := range clauses {
-		if c.q <= 0 {
-			continue
-		}
-		switch c.mediaType {
-		case MediaTypeJSONLD, "application/json", "application/*", "*/*":
-			return true
-		}
-	}
-	return false
+	c, ok := mostSpecificClauseForFormat(FormatJSONLD, clauses)
+	return ok && c.q > 0
 }
 
 type exportSelectorRequest struct {
@@ -399,6 +433,7 @@ type exportSelectorRequest struct {
 
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
 		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", fmt.Sprintf("method %s not allowed on /export", r.Method))
 		return
 	}
@@ -416,16 +451,13 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	maxExportBytes := s.cfg.MaxExportBytes
-	if maxExportBytes <= 0 {
-		maxExportBytes = DefaultMaxExportBytes
-	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, int64(maxExportBytes)+1))
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("read export body: %w", err).Error())
 		return
 	}
 	if len(body) > maxExportBytes {
-		writeJSONError(w, http.StatusRequestEntityTooLarge, "export_body_too_large", ErrExportBodyTooLarge.Error())
+		writeJSONError(w, http.StatusRequestEntityTooLarge, "export_body_too_large", errExportBodyTooLarge.Error())
 		return
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
@@ -476,7 +508,6 @@ func (s *Server) handlePrefixExport(
 	format ResultFormat,
 	allowTruncation bool,
 ) {
-	prefix = strings.TrimSpace(prefix)
 	if prefix == "" {
 		writeJSONError(w, http.StatusBadRequest, "invalid_prefix", "export \"prefix\" selector must not be empty")
 		return
@@ -486,21 +517,11 @@ func (s *Server) handlePrefixExport(
 		return
 	}
 
-	timeout := s.cfg.QueryTimeout
-	if timeout <= 0 {
-		timeout = sparql.DefaultQueryTimeout
-	}
-	queryCtx, cancel := context.WithTimeout(r.Context(), timeout)
+	queryCtx, cancel := context.WithTimeout(r.Context(), s.cfg.QueryTimeout)
 	defer cancel()
 
 	maxScan := s.cfg.MaxScanEntities
-	if maxScan <= 0 {
-		maxScan = sparql.DefaultMaxScanEntities
-	}
 	maxResults := s.cfg.MaxResults
-	if maxResults <= 0 {
-		maxResults = sparql.DefaultMaxResults
-	}
 
 	truncated := false
 	truncReason := ""
@@ -627,9 +648,6 @@ func (s *Server) handleConstructExport(
 
 func (s *Server) extractSPARQLQuery(r *http.Request) (queryStr string, status int, code string, err error) {
 	maxBytes := s.cfg.MaxQueryBytes
-	if maxBytes <= 0 {
-		maxBytes = DefaultMaxQueryBytes
-	}
 
 	switch r.Method {
 	case http.MethodGet:
@@ -641,10 +659,10 @@ func (s *Server) extractSPARQLQuery(r *http.Request) (queryStr string, status in
 			}
 			for _, qv := range values["query"] {
 				if len(qv) > maxBytes {
-					return "", http.StatusRequestEntityTooLarge, "query_too_large", ErrQueryTooLarge
+					return "", http.StatusRequestEntityTooLarge, "query_too_large", errQueryTooLarge
 				}
 			}
-			return "", http.StatusRequestEntityTooLarge, "query_too_large", ErrQueryTooLarge
+			return "", http.StatusRequestEntityTooLarge, "query_too_large", errQueryTooLarge
 		}
 		values, err := url.ParseQuery(r.URL.RawQuery)
 		if err != nil {
@@ -671,7 +689,7 @@ func (s *Server) extractSPARQLQuery(r *http.Request) (queryStr string, status in
 				return "", http.StatusBadRequest, "invalid_request", fmt.Errorf("read request body: %w", err)
 			}
 			if len(body) > maxBytes {
-				return "", http.StatusRequestEntityTooLarge, "query_too_large", ErrQueryTooLarge
+				return "", http.StatusRequestEntityTooLarge, "query_too_large", errQueryTooLarge
 			}
 			if strings.TrimSpace(string(body)) == "" {
 				return "", http.StatusBadRequest, "invalid_request", errors.New("empty SPARQL query body")
@@ -686,7 +704,7 @@ func (s *Server) extractSPARQLQuery(r *http.Request) (queryStr string, status in
 				return "", http.StatusBadRequest, "invalid_request", fmt.Errorf("read form body: %w", err)
 			}
 			if len(body) > formCap {
-				return "", http.StatusRequestEntityTooLarge, "query_too_large", ErrQueryTooLarge
+				return "", http.StatusRequestEntityTooLarge, "query_too_large", errQueryTooLarge
 			}
 			values, err := url.ParseQuery(string(body))
 			if err != nil {
@@ -723,7 +741,7 @@ func validateQueryValues(values url.Values, maxBytes int) (string, int, string, 
 	}
 	q := queries[0]
 	if len(q) > maxBytes {
-		return "", http.StatusRequestEntityTooLarge, "query_too_large", ErrQueryTooLarge
+		return "", http.StatusRequestEntityTooLarge, "query_too_large", errQueryTooLarge
 	}
 	if strings.TrimSpace(q) == "" {
 		return "", http.StatusBadRequest, "invalid_request", errors.New("empty \"query\" parameter")
@@ -740,16 +758,23 @@ func (s *Server) writeExecutionError(w http.ResponseWriter, err error) {
 	case errors.Is(err, sparql.ErrQueryTimeout), errors.Is(err, context.DeadlineExceeded):
 		writeClassifiedJSONError(w, http.StatusGatewayTimeout, sparql.ErrorCodeQueryTimeout, err)
 	case errors.Is(err, context.Canceled):
-		writeClassifiedJSONError(w, http.StatusGatewayTimeout, "request_canceled", err)
+		w.Header().Set("Retry-After", "1")
+		writeClassifiedJSONError(w, http.StatusServiceUnavailable, "service_unavailable", err)
 	case errors.Is(err, sparql.ErrInvalidOutputTriple):
 		writeClassifiedJSONError(w, http.StatusInternalServerError, sparql.ErrorCodeInvalidOutputTriple, err)
-	case errs.IsFatal(err):
-		writeClassifiedJSONError(w, http.StatusInternalServerError, classifyErrorCode(err, "internal_error"), err)
-	case errs.IsTransient(err), natsclient.IsNoResponders(err):
+	case errs.IsTransient(err), natsclient.IsNoResponders(err), hasClassifiedCode(err, "response_too_large"):
+		w.Header().Set("Retry-After", "1")
 		writeClassifiedJSONError(w, http.StatusServiceUnavailable, classifyErrorCode(err, "upstream_unavailable"), err)
-	default:
+	case errs.IsInvalid(err):
 		writeClassifiedJSONError(w, http.StatusBadRequest, classifyErrorCode(err, "query_execution_error"), err)
+	default:
+		writeClassifiedJSONError(w, http.StatusInternalServerError, classifyErrorCode(err, "internal_error"), err)
 	}
+}
+
+func hasClassifiedCode(err error, code string) bool {
+	var ce *errs.ClassifiedError
+	return errors.As(err, &ce) && ce.Code == code
 }
 
 func classifyErrorCode(err error, fallback string) string {

@@ -453,6 +453,16 @@ func TestUnsupportedFeatureErrors(t *testing.T) {
 			query:       `PREFIX ex: <https://example.org/> SELECT ?s WHERE { ?s ex:p (1 2) }`,
 			wantFeature: "RDF collection",
 		},
+		{
+			name:        "Binary addition in FILTER",
+			query:       `SELECT ?s ?x WHERE { ?s <https://example.org/p> ?x FILTER (?x + 1 > 5) }`,
+			wantFeature: "arithmetic",
+		},
+		{
+			name:        "Binary multiplication in FILTER",
+			query:       `SELECT ?s ?x WHERE { ?s <https://example.org/p> ?x FILTER (?x * 2 = 10) }`,
+			wantFeature: "arithmetic",
+		},
 	}
 
 	for _, tc := range cases {
@@ -480,6 +490,14 @@ func TestUnsupportedFeatureErrors(t *testing.T) {
 }
 
 func TestParseSPARQLSyntaxErrors(t *testing.T) {
+	deepBNode := "SELECT * WHERE { ?s <https://example.org/p> " +
+		strings.Repeat("[ <https://example.org/p> ", 130) +
+		"\"v\"" +
+		strings.Repeat(" ]", 130) +
+		" }"
+	deepGroup := "SELECT * WHERE " + strings.Repeat("{ ", 130) + "?s ?p ?o" + strings.Repeat(" }", 130)
+	deepExpr := "SELECT * WHERE { ?s ?p ?o FILTER " + strings.Repeat("(", 130) + "?s = ?o" + strings.Repeat(")", 130) + " }"
+
 	badQueries := []string{
 		"",
 		"\xff\xfe",
@@ -514,6 +532,10 @@ func TestParseSPARQLSyntaxErrors(t *testing.T) {
 		"SELECT ?s WHERE { ?s ?p \"hi\"^^123 }",
 		"SELECT ?s WHERE { ?s ?p 1.5e }",
 		"SELECT ?s WHERE { ?s ?p - }",
+		"SELECT ?s WHERE { ?s <https://example.org/p> \"a\" ?s <https://example.org/q> \"b\" }",
+		"CONSTRUCT { ?s <https://example.org/p> \"a\" ?s <https://example.org/q> \"b\" } WHERE { ?s ?p ?o }",
+		"SELECT ?s WHERE { ?s ?p ?o FILTER (_:b = <https://example.org/x>) }",
+		"SELECT ?s WHERE { ?s ?p ?o FILTER ([] = <https://example.org/x>) }",
 		"SELECT ?s WHERE { ?s ?p ?o FILTER (?s & ?p) }",
 		"SELECT ?s WHERE { ?s ?p ?o FILTER 123 }",
 		"SELECT ?s WHERE { ?s ?p ?o FILTER (BOUND(\"notavar\")) }",
@@ -524,11 +546,16 @@ func TestParseSPARQLSyntaxErrors(t *testing.T) {
 		"SELECT ?s WHERE { ?s ?p ?o } ORDER ?s",
 		"SELECT ?s WHERE { ?s ?p ?o } ORDER BY",
 		"SELECT ?s WHERE { ?s ?p ?o } ORDER BY 123",
+		"SELECT ?s WHERE { ?s ?p ?o } LIMIT 5 ORDER BY ?s",
+		"SELECT ?s WHERE { ?s ?p ?o } ORDER BY ?s ORDER BY ?p",
 		"SELECT ?s WHERE { ?s ?p ?o } LIMIT -1",
 		"SELECT ?s WHERE { ?s ?p ?o } LIMIT 10 LIMIT 20",
 		"SELECT ?s WHERE { ?s ?p ?o } OFFSET 5 OFFSET 10",
 		"SELECT ?s WHERE { ?s ?p ?o } EXTRA_TOKEN",
 		"DESCRIBE",
+		deepBNode,
+		deepGroup,
+		deepExpr,
 	}
 
 	for _, q := range badQueries {
@@ -592,16 +619,20 @@ func TestPropParseSPARQLGeneratedQueries(t *testing.T) {
 		}
 
 		var wantPath PathKind
+		var wantPredIRI string
 		switch pathChoice {
 		case 0:
 			fmt.Fprintf(&sb, "  ?%s cco:%s ?%s .\n", subjVar, predLocal, objVar)
 			wantPath = PathNone
+			wantPredIRI = "https://www.commoncoreontologies.org/" + predLocal
 		case 1:
 			fmt.Fprintf(&sb, "  ?%s rdf:type/rdfs:subClassOf* ?%s .\n", subjVar, objVar)
 			wantPath = PathRDFTypeSubClassOfStar
+			wantPredIRI = RDFTypeIRI
 		case 2:
 			fmt.Fprintf(&sb, "  ?%s rdfs:subClassOf* ?%s .\n", subjVar, objVar)
 			wantPath = PathSubClassOfStar
+			wantPredIRI = RDFSSubClassOfIRI
 		}
 
 		if hasOptional {
@@ -647,8 +678,15 @@ func TestPropParseSPARQLGeneratedQueries(t *testing.T) {
 		if parsed.Distinct != distinct {
 			rt.Fatalf("Distinct = %v, want %v", parsed.Distinct, distinct)
 		}
-		if len(parsed.Where.Elements) == 0 {
-			rt.Fatal("Where.Elements is empty")
+		wantElements := 1
+		if hasOptional {
+			wantElements++
+		}
+		if hasUnion {
+			wantElements++
+		}
+		if len(parsed.Where.Elements) != wantElements {
+			rt.Fatalf("len(Where.Elements) = %d, want %d", len(parsed.Where.Elements), wantElements)
 		}
 		bgp, ok := parsed.Where.Elements[0].(BGPPattern)
 		if !ok || len(bgp.Triples) != 1 {
@@ -657,10 +695,43 @@ func TestPropParseSPARQLGeneratedQueries(t *testing.T) {
 		if bgp.Triples[0].Path != wantPath {
 			rt.Fatalf("Triples[0].Path = %v, want %v", bgp.Triples[0].Path, wantPath)
 		}
+		if bgp.Triples[0].Predicate.Kind != TermIRI || bgp.Triples[0].Predicate.Value != wantPredIRI {
+			rt.Fatalf("Triples[0].Predicate = %+v, want IRI %q", bgp.Triples[0].Predicate, wantPredIRI)
+		}
+		elIdx := 1
+		if hasOptional {
+			opt, ok := parsed.Where.Elements[elIdx].(OptionalPattern)
+			if !ok || len(opt.Group.Elements) != 1 {
+				rt.Fatalf("Elements[%d] = %+v, want OptionalPattern", elIdx, parsed.Where.Elements[elIdx])
+			}
+			optBGP := opt.Group.Elements[0].(BGPPattern)
+			wantClassIRI := "https://www.commoncoreontologies.org/" + predLocal
+			if optBGP.Triples[0].Object.Kind != TermIRI || optBGP.Triples[0].Object.Value != wantClassIRI {
+				rt.Fatalf("OPTIONAL object = %+v, want IRI %q", optBGP.Triples[0].Object, wantClassIRI)
+			}
+			elIdx++
+		}
+		if hasUnion {
+			u, ok := parsed.Where.Elements[elIdx].(UnionPattern)
+			if !ok || len(u.Branches) != 2 {
+				rt.Fatalf("Elements[%d] = %+v, want 2-branch UnionPattern", elIdx, parsed.Where.Elements[elIdx])
+			}
+		}
 		if len(parsed.Where.Filters) != 1 {
 			rt.Fatalf("len(Where.Filters) = %d, want 1", len(parsed.Where.Filters))
 		}
 		if form != QueryAsk {
+			if hasOrder {
+				wantDir := OrderAsc
+				if orderDesc {
+					wantDir = OrderDesc
+				}
+				if len(parsed.OrderBy) != 1 || parsed.OrderBy[0].Direction != wantDir {
+					rt.Fatalf("OrderBy = %+v, want Direction %v", parsed.OrderBy, wantDir)
+				}
+			} else if len(parsed.OrderBy) != 0 {
+				rt.Fatalf("OrderBy = %+v, want empty", parsed.OrderBy)
+			}
 			if parsed.Limit == nil || *parsed.Limit != limitVal || parsed.Offset != offsetVal {
 				rt.Fatalf("Limit=%v Offset=%d, want %d and %d", parsed.Limit, parsed.Offset, limitVal, offsetVal)
 			}
@@ -705,6 +776,36 @@ func FuzzParseSPARQL(f *testing.F) {
 		f.Add(s)
 	}
 
+	var assertGroupValid func(t *testing.T, g GroupPattern)
+	assertGroupValid = func(t *testing.T, g GroupPattern) {
+		for _, el := range g.Elements {
+			switch p := el.(type) {
+			case BGPPattern:
+				for _, tp := range p.Triples {
+					if tp.Subject.Kind == TermLiteral {
+						t.Fatalf("parsed BGP contains literal subject %+v", tp.Subject)
+					}
+					if tp.Predicate.Kind != TermVariable && tp.Predicate.Kind != TermIRI {
+						t.Fatalf("parsed BGP contains invalid predicate kind %+v", tp.Predicate)
+					}
+				}
+			case OptionalPattern:
+				assertGroupValid(t, p.Group)
+			case UnionPattern:
+				if len(p.Branches) < 2 {
+					t.Fatalf("parsed UnionPattern has %d branches, want >= 2", len(p.Branches))
+				}
+				for _, b := range p.Branches {
+					assertGroupValid(t, b)
+				}
+			case SubGroupPattern:
+				assertGroupValid(t, p.Group)
+			default:
+				t.Fatalf("unexpected PatternElement %T", el)
+			}
+		}
+	}
+
 	f.Fuzz(func(t *testing.T, query string) {
 		q, err := Parse(query)
 		if err != nil {
@@ -725,5 +826,23 @@ func FuzzParseSPARQL(f *testing.F) {
 		if q.Prefixes == nil {
 			t.Fatalf("Parse(%q) returned nil Prefixes map", query)
 		}
+		if q.Form == QuerySelect && !q.SelectAll && len(q.Variables) == 0 {
+			t.Fatalf("Parse(%q) returned SELECT query with neither SelectAll nor Variables", query)
+		}
+		if q.Form == QueryDescribe && !q.DescribeAll && len(q.Variables) == 0 && len(q.DescribeIRIs) == 0 {
+			t.Fatalf("Parse(%q) returned DESCRIBE query with no target variables or IRIs", query)
+		}
+		for _, oc := range q.OrderBy {
+			if oc.Direction != OrderAsc && oc.Direction != OrderDesc {
+				t.Fatalf("Parse(%q) returned invalid OrderDirection %v", query, oc.Direction)
+			}
+			if oc.Expr == nil {
+				t.Fatalf("Parse(%q) returned nil OrderCondition.Expr", query)
+			}
+		}
+		if q.Offset < 0 || (q.Limit != nil && *q.Limit < 0) {
+			t.Fatalf("Parse(%q) returned negative Limit/Offset", query)
+		}
+		assertGroupValid(t, q.Where)
 	})
 }

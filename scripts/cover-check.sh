@@ -16,8 +16,8 @@ readonly threshold=80
 readonly module=github.com/c360studio/semsparql
 
 # The coverage targets, "<package directory> <profile>", profile one of unit, integration
-# or merged. Runtime packages (irimap, reader, sparql, server, cmd/semsparql) add their
-# lines here as tasks 1.1–4.1 land.
+# or merged. Every runtime package (irimap, reader, sparql, server, cmd/semsparql) is
+# enforced at >=80% statement coverage.
 default_targets=(
   "irimap unit"
   "reader unit"
@@ -109,7 +109,7 @@ check() { # package-directory label profile...
 }
 
 if [ ${#targets[@]} -eq 0 ]; then
-  echo "cover: 0 target package(s) configured (populated as runtime packages land in tasks 1.1–4.1)"
+  echo "cover: 0 target package(s) configured"
 fi
 
 for target in "${targets[@]+"${targets[@]}"}"; do

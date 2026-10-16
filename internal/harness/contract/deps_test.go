@@ -85,21 +85,32 @@ func TestPinnedDependenciesSensitivity(t *testing.T) {
 			requireViolation(t, pinnedDependencyViolations(t, dir), tc.wants...)
 		})
 	}
+	t.Run("go.work present", func(t *testing.T) {
+		dir, _ := writeTree(t, map[string]string{
+			"go.mod":  base,
+			"go.work": "go 1.25.0\nuse .\n",
+		})
+		requireViolation(t, pinnedDependencyViolations(t, dir), "go.work", "forbidden")
+	})
 }
 
 func pinnedDependencyViolations(t *testing.T, root string) []string {
 	t.Helper()
+	var out []string
+	for _, workFile := range []string{"go.work", "go.work.sum"} {
+		if _, err := os.Stat(filepath.Join(root, workFile)); err == nil {
+			out = append(out, fmt.Sprintf("%s: workspace file is forbidden (upstream boundary rule)", workFile))
+		}
+	}
 	path := filepath.Join(root, "go.mod")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return []string{fmt.Sprintf("go.mod: %v", err)}
+		return append(out, fmt.Sprintf("go.mod: %v", err))
 	}
 	mf, err := modfile.Parse("go.mod", data, nil)
 	if err != nil {
-		return []string{fmt.Sprintf("go.mod: parse: %v", err)}
+		return append(out, fmt.Sprintf("go.mod: parse: %v", err))
 	}
-
-	var out []string
 	if mf.Module == nil || mf.Module.Mod.Path != wantModulePath {
 		got := "<nil>"
 		if mf.Module != nil {

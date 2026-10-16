@@ -710,9 +710,9 @@ func TestDescribeOutgoingEntityCBDAndInvalidTripleGuard(t *testing.T) {
 		}
 		for _, tc := range invalidCases {
 			t.Run(tc.name, func(t *testing.T) {
-				err := ValidateTripleSerializable(tc.tr, baseIRI)
+				err := validateTripleSerializable(tc.tr, baseIRI)
 				if !errors.Is(err, ErrInvalidOutputTriple) {
-					t.Fatalf("ValidateTripleSerializable(%s) = %v, want ErrInvalidOutputTriple", tc.name, err)
+					t.Fatalf("validateTripleSerializable(%s) = %v, want ErrInvalidOutputTriple", tc.name, err)
 				}
 				badEnt := graph.EntityState{
 					ID:      idAlpha,
@@ -722,6 +722,64 @@ func TestDescribeOutgoingEntityCBDAndInvalidTripleGuard(t *testing.T) {
 					t.Fatalf("UnfoldEntity(%s) = %v, want ErrInvalidOutputTriple", tc.name, err)
 				}
 			})
+		}
+	})
+
+	t.Run("UnfoldEntity and CONSTRUCT preserve literals with embedded quote-at and quote-caret sequences and emit intermediate node superclasses", func(t *testing.T) {
+		vocabulary.RegisterEntityType("intel.rolenode",
+			vocabulary.WithClassIRI("http://purl.obolibrary.org/obo/BFO_0000023"),
+			vocabulary.WithSuperclass("http://purl.obolibrary.org/obo/BFO_0000017"),
+		)
+		trickyVals := []string{
+			`say "@bob" now`,
+			`say "^^<https://example.org/dt>" now`,
+			`slash \ and "quote" and "@tag"`,
+		}
+		trickyEnt := graph.EntityState{
+			ID: idAlpha,
+			Triples: []message.Triple{
+				{Subject: idAlpha, Predicate: "intel.role.assigned", Object: trickyVals[0]},
+				{Subject: idAlpha, Predicate: "intel.role.assigned", Object: trickyVals[1]},
+				{Subject: idAlpha, Predicate: "intel.role.assigned", Object: trickyVals[2]},
+			},
+		}
+		unfolded, err := UnfoldEntity(&trickyEnt, baseIRI)
+		if err != nil {
+			t.Fatalf("UnfoldEntity(trickyEnt): %v", err)
+		}
+		ntOut, err := export.SerializeToString(unfolded, export.NTriples, export.WithBaseIRI(baseIRI))
+		if err != nil {
+			t.Fatalf("SerializeToString(NTriples): %v", err)
+		}
+		parsed, err := parseIndependentNTriples(ntOut)
+		if err != nil {
+			t.Fatalf("parseIndependentNTriples: %v", err)
+		}
+		for _, wantVal := range trickyVals {
+			foundVal := false
+			for _, rt := range parsed {
+				if rt.Predicate.Value == "http://www.w3.org/2000/01/rdf-schema#label" &&
+					rt.Object.Kind == TermLiteral &&
+					rt.Object.Value == wantVal &&
+					rt.Object.Datatype == XSDStringIRI &&
+					rt.Object.Language == "" {
+					foundVal = true
+				}
+			}
+			if !foundVal {
+				t.Fatalf("unfolded graph missing exact xsd:string literal %q; parsed=%+v", wantVal, parsed)
+			}
+		}
+		foundInterSuper := false
+		for _, rt := range parsed {
+			if rt.Subject.Kind == TermBlankNode &&
+				rt.Predicate.Value == RDFTypeIRI &&
+				rt.Object.Value == "http://purl.obolibrary.org/obo/BFO_0000017" {
+				foundInterSuper = true
+			}
+		}
+		if !foundInterSuper {
+			t.Fatalf("expected intermediate blank node to include registered superclass BFO_0000017, got %+v", parsed)
 		}
 	})
 }
@@ -897,7 +955,7 @@ func parseIndependentNTriples(input string) ([]rdfTriple, error) {
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", lineNo+1, err)
 		}
-		obj, err := parseNTriplesObjectTerm(strings.TrimSpace(rest))
+		obj, err := parseTestNTriplesObject(strings.TrimSpace(rest))
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", lineNo+1, err)
 		}
@@ -908,6 +966,67 @@ func parseIndependentNTriples(input string) ([]rdfTriple, error) {
 		})
 	}
 	return canonicalizeRDFGraph(out), nil
+}
+
+func parseTestNTriplesObject(s string) (Term, error) {
+	if strings.HasPrefix(s, "<") && strings.HasSuffix(s, ">") {
+		return Term{Kind: TermIRI, Value: s[1 : len(s)-1]}, nil
+	}
+	if strings.HasPrefix(s, "_:") {
+		return Term{Kind: TermBlankNode, Value: s}, nil
+	}
+	if !strings.HasPrefix(s, `"`) {
+		return Term{}, fmt.Errorf("invalid N-Triples object %q", s)
+	}
+	var lexBuf strings.Builder
+	closeQuote := -1
+	for i := 1; i < len(s); i++ {
+		if s[i] == '"' {
+			closeQuote = i
+			break
+		}
+		if s[i] == '\\' {
+			i++
+			if i >= len(s) {
+				return Term{}, fmt.Errorf("unterminated escape in %q", s)
+			}
+			switch s[i] {
+			case '\\', '"':
+				lexBuf.WriteByte(s[i])
+			case 'n':
+				lexBuf.WriteByte('\n')
+			case 'r':
+				lexBuf.WriteByte('\r')
+			case 't':
+				lexBuf.WriteByte('\t')
+			default:
+				return Term{}, fmt.Errorf("invalid escape \\%c in %q", s[i], s)
+			}
+			continue
+		}
+		lexBuf.WriteByte(s[i])
+	}
+	if closeQuote < 0 {
+		return Term{}, fmt.Errorf("unterminated quoted literal %q", s)
+	}
+	tail := s[closeQuote+1:]
+	dt := XSDStringIRI
+	lang := ""
+	if tail != "" {
+		if strings.HasPrefix(tail, "^^<") && strings.HasSuffix(tail, ">") {
+			dt = tail[3 : len(tail)-1]
+			if strings.HasPrefix(dt, "@") && len(dt) > 1 {
+				lang = strings.ToLower(dt[1:])
+				dt = RDFLangStringIRI
+			}
+		} else if strings.HasPrefix(tail, "@") && len(tail) > 1 {
+			lang = strings.ToLower(tail[1:])
+			dt = RDFLangStringIRI
+		} else {
+			return Term{}, fmt.Errorf("unexpected literal suffix %q in %q", tail, s)
+		}
+	}
+	return Term{Kind: TermLiteral, Value: lexBuf.String(), Datatype: dt, Language: lang}, nil
 }
 
 func parseNTSubject(s string) (Term, string, error) {
@@ -939,164 +1058,226 @@ func parseNTPredicate(s string) (Term, string, error) {
 	return Term{Kind: TermIRI, Value: s[1:end]}, s[end+1:], nil
 }
 
-func resolveTurtleTermTok(cur, next func() token, prefixes map[string]string) (Term, error) {
-	tok := cur()
-	switch tok.kind {
-	case tokIRI:
-		next()
-		return Term{Kind: TermIRI, Value: tok.value}, nil
-	case tokPrefixed, tokPrefixName:
-		next()
-		ns, ok := prefixes[tok.prefix]
-		if !ok {
-			return Term{}, fmt.Errorf("undeclared Turtle prefix %q at byte %d", tok.prefix, tok.pos)
-		}
-		local := tok.value
-		if tok.kind == tokPrefixName {
-			local = ""
-		}
-		return Term{Kind: TermIRI, Value: ns + local}, nil
-	case tokBlankNode:
-		next()
-		return Term{Kind: TermBlankNode, Value: tok.value}, nil
-	case tokIdent:
-		if tok.value == "a" {
-			next()
-			return Term{Kind: TermIRI, Value: RDFTypeIRI}, nil
-		}
-		if tok.value == "true" || tok.value == "false" {
-			next()
-			return Term{Kind: TermLiteral, Value: tok.value, Datatype: XSDBooleanIRI}, nil
-		}
-		return Term{}, fmt.Errorf("unexpected identifier %q at byte %d", tok.value, tok.pos)
-	case tokInteger:
-		next()
-		return Term{Kind: TermLiteral, Value: tok.value, Datatype: XSDIntegerIRI}, nil
-	case tokDecimal:
-		next()
-		return Term{Kind: TermLiteral, Value: tok.value, Datatype: XSDDecimalIRI}, nil
-	case tokDouble:
-		next()
-		return Term{Kind: TermLiteral, Value: tok.value, Datatype: XSDDoubleIRI}, nil
-	case tokString:
-		next()
-		dt := XSDStringIRI
-		lang := ""
-		if cur().kind == tokLangTag {
-			lang = strings.ToLower(next().value)
-			dt = RDFLangStringIRI
-		} else if cur().kind == tokDatatype {
-			next()
-			dtTok := cur()
-			switch dtTok.kind {
-			case tokIRI:
-				next()
-				dt = dtTok.value
-			case tokPrefixed, tokPrefixName:
-				next()
-				ns, ok := prefixes[dtTok.prefix]
-				if !ok {
-					return Term{}, fmt.Errorf("undeclared datatype prefix %q", dtTok.prefix)
-				}
-				local := dtTok.value
-				if dtTok.kind == tokPrefixName {
-					local = ""
-				}
-				dt = ns + local
-			default:
-				return Term{}, fmt.Errorf("invalid datatype token %q", dtTok.value)
-			}
-		}
-		return Term{Kind: TermLiteral, Value: tok.value, Datatype: dt, Language: lang}, nil
-	default:
-		return Term{}, fmt.Errorf("unexpected token %q (kind %v) at byte %d", tok.value, tok.kind, tok.pos)
-	}
-}
-
 // parseIndependentTurtle parses a W3C Turtle document into canonical rdfTriples
-// using our SPARQL lexer and an independent Turtle grammar state machine.
+// using an independent test-only scanner (without calling sparql's production lexer).
 func parseIndependentTurtle(input string) ([]rdfTriple, error) {
-	tokens, err := lex(input)
+	toks, err := scanTestTurtleTokens(input)
 	if err != nil {
 		return nil, err
 	}
 	prefixes := make(map[string]string)
 	pos := 0
-	cur := func() token {
-		if pos >= len(tokens) {
-			return tokens[len(tokens)-1]
+	peek := func() string {
+		if pos >= len(toks) {
+			return ""
 		}
-		return tokens[pos]
+		return toks[pos]
 	}
-	next := func() token {
-		t := cur()
-		if pos < len(tokens)-1 {
+	take := func() string {
+		t := peek()
+		if pos < len(toks) {
 			pos++
 		}
 		return t
 	}
-	resolveTermTok := func() (Term, error) {
-		return resolveTurtleTermTok(cur, next, prefixes)
+	resolveTok := func() (Term, error) {
+		return resolveTestTurtleToken(take(), prefixes)
 	}
 
 	var out []rdfTriple
-	for cur().kind != tokEOF {
-		// Handle @prefix pfx: <ns> . or PREFIX pfx: <ns>
-		if (cur().kind == tokLangTag && strings.EqualFold(cur().value, "prefix")) ||
-			(cur().kind == tokIdent && strings.EqualFold(cur().value, "PREFIX")) {
-			isAtPrefix := cur().kind == tokLangTag
-			next()
-			pfxTok := next()
-			if pfxTok.kind != tokPrefixName {
-				return nil, fmt.Errorf("expected prefix name after @prefix, got %q", pfxTok.value)
+	for peek() != "" {
+		if strings.EqualFold(peek(), "@prefix") || strings.EqualFold(peek(), "PREFIX") {
+			kw := take()
+			pfxTok := take()
+			colon := strings.IndexByte(pfxTok, ':')
+			if colon < 0 {
+				return nil, fmt.Errorf("invalid prefix name %q", pfxTok)
 			}
-			iriTok := next()
-			if iriTok.kind != tokIRI {
-				return nil, fmt.Errorf("expected <namespace> after prefix %q, got %q", pfxTok.value, iriTok.value)
+			iriTok := take()
+			if !strings.HasPrefix(iriTok, "<") || !strings.HasSuffix(iriTok, ">") {
+				return nil, fmt.Errorf("expected <namespace>, got %q", iriTok)
 			}
-			prefixes[pfxTok.prefix] = iriTok.value
-			if isAtPrefix && cur().kind == tokDot {
-				next()
+			prefixes[pfxTok[:colon]] = iriTok[1 : len(iriTok)-1]
+			if strings.HasPrefix(kw, "@") && peek() == "." {
+				take()
 			}
 			continue
 		}
 
-		subj, err := resolveTermTok()
+		subj, err := resolveTok()
 		if err != nil {
 			return nil, err
 		}
 		for {
-			pred, err := resolveTermTok()
+			pred, err := resolveTok()
 			if err != nil {
 				return nil, err
 			}
 			for {
-				obj, err := resolveTermTok()
+				obj, err := resolveTok()
 				if err != nil {
 					return nil, err
 				}
 				out = append(out, rdfTriple{Subject: subj, Predicate: pred, Object: obj})
-				if cur().kind == tokComma {
-					next()
+				if peek() == "," {
+					take()
 					continue
 				}
 				break
 			}
-			if cur().kind == tokSemi {
-				next()
-				if cur().kind == tokDot {
+			if peek() == ";" {
+				take()
+				if peek() == "." {
 					break
 				}
 				continue
 			}
 			break
 		}
-		if cur().kind != tokDot {
-			return nil, fmt.Errorf("expected '.' after Turtle triple block, got %q", cur().value)
+		if take() != "." {
+			return nil, errors.New("expected '.' at end of Turtle statement")
 		}
-		next()
 	}
 	return canonicalizeRDFGraph(out), nil
+}
+
+func resolveTestTurtleToken(raw string, prefixes map[string]string) (Term, error) {
+	if raw == "" {
+		return Term{}, errors.New("unexpected EOF in Turtle term")
+	}
+	if strings.HasPrefix(raw, "<") && strings.HasSuffix(raw, ">") {
+		return Term{Kind: TermIRI, Value: raw[1 : len(raw)-1]}, nil
+	}
+	if strings.HasPrefix(raw, "_:") {
+		return Term{Kind: TermBlankNode, Value: raw}, nil
+	}
+	if strings.HasPrefix(raw, `"`) {
+		return parseTestTurtleLiteral(raw, prefixes)
+	}
+	if raw == "a" {
+		return Term{Kind: TermIRI, Value: RDFTypeIRI}, nil
+	}
+	if raw == "true" || raw == "false" {
+		return Term{Kind: TermLiteral, Value: raw, Datatype: XSDBooleanIRI}, nil
+	}
+	if colon := strings.IndexByte(raw, ':'); colon >= 0 {
+		pfx := raw[:colon]
+		local := raw[colon+1:]
+		ns, ok := prefixes[pfx]
+		if !ok {
+			return Term{}, fmt.Errorf("undeclared Turtle prefix %q in %q", pfx, raw)
+		}
+		return Term{Kind: TermIRI, Value: ns + local}, nil
+	}
+	if _, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		return Term{Kind: TermLiteral, Value: raw, Datatype: XSDIntegerIRI}, nil
+	}
+	if _, err := strconv.ParseFloat(raw, 64); err == nil {
+		if strings.ContainsAny(raw, "eE") {
+			return Term{Kind: TermLiteral, Value: raw, Datatype: XSDDoubleIRI}, nil
+		}
+		return Term{Kind: TermLiteral, Value: raw, Datatype: XSDDecimalIRI}, nil
+	}
+	return Term{}, fmt.Errorf("unrecognized Turtle token %q", raw)
+}
+
+func parseTestTurtleLiteral(raw string, prefixes map[string]string) (Term, error) {
+	if idx := strings.LastIndex(raw, `"^^`); idx >= 1 {
+		dtRef := raw[idx+3:]
+		if !strings.HasPrefix(dtRef, "<") {
+			if colon := strings.IndexByte(dtRef, ':'); colon >= 0 {
+				ns, ok := prefixes[dtRef[:colon]]
+				if !ok {
+					return Term{}, fmt.Errorf("undeclared datatype prefix in %q", raw)
+				}
+				raw = raw[:idx+3] + "<" + ns + dtRef[colon+1:] + ">"
+			}
+		}
+	}
+	return parseTestNTriplesObject(raw)
+}
+
+func scanTestTurtleTokens(s string) ([]string, error) {
+	var toks []string
+	i := 0
+	for i < len(s) {
+		ch := s[i]
+		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+			i++
+			continue
+		}
+		if ch == '#' {
+			for i < len(s) && s[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		if ch == ';' || ch == ',' {
+			toks = append(toks, string(ch))
+			i++
+			continue
+		}
+		if ch == '.' {
+			if i+1 >= len(s) || s[i+1] == ' ' || s[i+1] == '\t' || s[i+1] == '\n' || s[i+1] == '\r' {
+				toks = append(toks, ".")
+				i++
+				continue
+			}
+		}
+		if ch == '<' {
+			end := strings.IndexByte(s[i:], '>')
+			if end < 0 {
+				return nil, errors.New("unterminated <IRI> in Turtle")
+			}
+			toks = append(toks, s[i:i+end+1])
+			i += end + 1
+			continue
+		}
+		if ch == '"' {
+			start := i
+			i++
+			for i < len(s) {
+				if s[i] == '\\' {
+					i += 2
+					continue
+				}
+				if s[i] == '"' {
+					i++
+					break
+				}
+				i++
+			}
+			if i+1 < len(s) && s[i] == '^' && s[i+1] == '^' {
+				i += 2
+				if i < len(s) && s[i] == '<' {
+					end := strings.IndexByte(s[i:], '>')
+					if end < 0 {
+						return nil, errors.New("unterminated datatype <IRI> in Turtle")
+					}
+					i += end + 1
+				} else {
+					for i < len(s) && !strings.ContainsRune(" \t\n\r;,.#", rune(s[i])) {
+						i++
+					}
+				}
+			} else if i < len(s) && s[i] == '@' {
+				for i < len(s) && !strings.ContainsRune(" \t\n\r;,.#", rune(s[i])) {
+					i++
+				}
+			}
+			toks = append(toks, s[start:i])
+			continue
+		}
+		start := i
+		for i < len(s) && !strings.ContainsRune(" \t\n\r;,\"#", rune(s[i])) {
+			if s[i] == '.' && (i+1 >= len(s) || strings.ContainsRune(" \t\n\r", rune(s[i+1]))) {
+				break
+			}
+			i++
+		}
+		toks = append(toks, s[start:i])
+	}
+	return toks, nil
 }
 
 // parseIndependentJSONLD parses a JSON-LD document (@context + single node or @graph)

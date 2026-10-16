@@ -90,6 +90,11 @@ func NegotiateAccept(form sparql.QueryForm, acceptHeader string) (ResultFormat, 
 		return 0, fmt.Errorf("%w: %v", ErrNotAcceptable, err)
 	}
 
+	candidates := candidateFormatsForForm(form)
+	if len(candidates) == 0 {
+		return 0, ErrNotAcceptable
+	}
+
 	var (
 		bestFormat ResultFormat
 		bestQ      = -1.0
@@ -97,12 +102,9 @@ func NegotiateAccept(form sparql.QueryForm, acceptHeader string) (ResultFormat, 
 		bestOrder  = len(clauses) + 1
 	)
 
-	for _, c := range clauses {
-		if c.q <= 0 {
-			continue
-		}
-		f, ok := matchMediaRange(form, c.mediaType)
-		if !ok {
+	for _, f := range candidates {
+		c, ok := mostSpecificClauseForFormat(f, clauses)
+		if !ok || c.q <= 0 {
 			continue
 		}
 		if c.q > bestQ ||
@@ -130,6 +132,122 @@ func defaultFormatForForm(form sparql.QueryForm) (ResultFormat, error) {
 	default:
 		return 0, ErrNotAcceptable
 	}
+}
+
+func candidateFormatsForForm(form sparql.QueryForm) []ResultFormat {
+	switch form {
+	case sparql.QuerySelect:
+		return []ResultFormat{FormatSPARQLJSON, FormatSPARQLXML, FormatCSV, FormatTSV}
+	case sparql.QueryAsk:
+		return []ResultFormat{FormatSPARQLJSON, FormatSPARQLXML}
+	case sparql.QueryConstruct, sparql.QueryDescribe:
+		return []ResultFormat{FormatTurtle, FormatJSONLD, FormatNTriples}
+	default:
+		return nil
+	}
+}
+
+func mostSpecificClauseForFormat(f ResultFormat, clauses []acceptClause) (acceptClause, bool) {
+	var (
+		best     acceptClause
+		bestSpec = -1
+		matched  bool
+	)
+	for _, c := range clauses {
+		spec, ok := matchFormatSpecificity(f, c.mediaType)
+		if !ok {
+			continue
+		}
+		if !matched ||
+			spec > bestSpec ||
+			(spec == bestSpec && c.q > best.q) ||
+			(spec == bestSpec && c.q == best.q && c.order < best.order) {
+			best = c
+			best.specificity = spec
+			bestSpec = spec
+			matched = true
+		}
+	}
+	return best, matched
+}
+
+func matchFormatSpecificity(f ResultFormat, mediaType string) (int, bool) {
+	switch f {
+	case FormatSPARQLJSON:
+		switch mediaType {
+		case MediaTypeSPARQLJSON:
+			return 3, true
+		case "application/json":
+			return 2, true
+		case "application/*":
+			return 1, true
+		case "*/*":
+			return 0, true
+		}
+	case FormatSPARQLXML:
+		switch mediaType {
+		case MediaTypeSPARQLXML:
+			return 3, true
+		case "application/xml", "text/xml":
+			return 2, true
+		case "application/*":
+			return 1, true
+		case "*/*":
+			return 0, true
+		}
+	case FormatCSV:
+		switch mediaType {
+		case MediaTypeCSV:
+			return 3, true
+		case "text/*":
+			return 1, true
+		case "*/*":
+			return 0, true
+		}
+	case FormatTSV:
+		switch mediaType {
+		case MediaTypeTSV:
+			return 3, true
+		case "text/*":
+			return 1, true
+		case "*/*":
+			return 0, true
+		}
+	case FormatTurtle:
+		switch mediaType {
+		case MediaTypeTurtle:
+			return 3, true
+		case "application/x-turtle":
+			return 2, true
+		case "text/*":
+			return 1, true
+		case "*/*":
+			return 0, true
+		}
+	case FormatNTriples:
+		switch mediaType {
+		case MediaTypeNTriples:
+			return 3, true
+		case "text/plain":
+			return 2, true
+		case "application/*":
+			return 1, true
+		case "*/*":
+			return 0, true
+		}
+	case FormatJSONLD:
+		switch mediaType {
+		case MediaTypeJSONLD:
+			return 3, true
+		case "application/json":
+			return 2, true
+		case "application/*":
+			return 1, true
+		case "*/*":
+			return 0, true
+		}
+	}
+	return 0, false
 }
 
 func parseAcceptHeader(header string) ([]acceptClause, error) {
@@ -202,47 +320,4 @@ func parseMediaRange(raw string) (string, map[string]string, error) {
 		return "", nil, err
 	}
 	return strings.ToLower(mt), params, nil
-}
-
-func matchMediaRange(form sparql.QueryForm, mediaType string) (ResultFormat, bool) {
-	switch form {
-	case sparql.QuerySelect:
-		switch mediaType {
-		case MediaTypeSPARQLJSON, "application/json", "*/*", "application/*":
-			return FormatSPARQLJSON, true
-		case MediaTypeSPARQLXML, "application/xml", "text/xml":
-			return FormatSPARQLXML, true
-		case MediaTypeCSV, "text/*":
-			return FormatCSV, true
-		case MediaTypeTSV:
-			return FormatTSV, true
-		default:
-			return 0, false
-		}
-
-	case sparql.QueryAsk:
-		switch mediaType {
-		case MediaTypeSPARQLJSON, "application/json", "*/*", "application/*":
-			return FormatSPARQLJSON, true
-		case MediaTypeSPARQLXML, "application/xml", "text/xml":
-			return FormatSPARQLXML, true
-		default:
-			return 0, false
-		}
-
-	case sparql.QueryConstruct, sparql.QueryDescribe:
-		switch mediaType {
-		case MediaTypeTurtle, "application/x-turtle", "*/*", "text/*":
-			return FormatTurtle, true
-		case MediaTypeNTriples, "text/plain":
-			return FormatNTriples, true
-		case MediaTypeJSONLD, "application/json", "application/*":
-			return FormatJSONLD, true
-		default:
-			return 0, false
-		}
-
-	default:
-		return 0, false
-	}
 }

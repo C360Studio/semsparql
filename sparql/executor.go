@@ -90,17 +90,15 @@ type Result struct {
 
 // Config configures a SPARQL Executor. Zero values for Timeout, MaxResults, and
 // MaxScanEntities use DefaultQueryTimeout (10s), DefaultMaxResults (10,000), and
-// DefaultMaxScanEntities (100,000) respectively. Org and Platform optionally scope
-// bound-class pattern scans (`<org>.<platform>.*.<domain>.<type>.*`), defaulting
-// to `*` wildcards when empty.
+// DefaultMaxScanEntities (100,000) respectively.
 type Config struct {
 	Mapper          *irimap.Mapper
 	Timeout         time.Duration
 	MaxResults      int
 	MaxScanEntities int
 	AllowTruncation bool
-	Org             string
-	Platform        string
+	org             string
+	platform        string
 }
 
 // EvalOption configures a single Execute / ExecuteQuery invocation.
@@ -120,9 +118,9 @@ func WithAllowTruncation(allow bool) EvalOption {
 	}
 }
 
-// WithOrgPlatform overrides Config.Org and Config.Platform for a single query
+// withOrgPlatform overrides Config.org and Config.platform for a single query
 // execution when scoping bound-class pattern scans.
-func WithOrgPlatform(org, platform string) EvalOption {
+func withOrgPlatform(org, platform string) EvalOption {
 	return func(o *evalOptions) {
 		o.org = &org
 		o.platform = &platform
@@ -189,11 +187,11 @@ func (e *Executor) Execute(ctx context.Context, q *Query, opts ...EvalOption) (*
 	if eo.allowTruncation != nil {
 		allowTruncation = *eo.allowTruncation
 	}
-	org := e.cfg.Org
+	org := e.cfg.org
 	if eo.org != nil {
 		org = *eo.org
 	}
-	platform := e.cfg.Platform
+	platform := e.cfg.platform
 	if eo.platform != nil {
 		platform = *eo.platform
 	}
@@ -215,48 +213,49 @@ func (e *Executor) Execute(ctx context.Context, q *Query, opts ...EvalOption) (*
 	}
 
 	state := &execState{
-		ctx:             queryCtx,
-		reader:          e.reader,
-		mapper:          e.cfg.Mapper,
-		maxResults:      maxResults,
-		budgetRemaining: maxScan,
-		allowTruncation: allowTruncation,
-		org:             org,
-		platform:        platform,
-		unfoldedBySubj:  make(map[Term][]rdfTriple),
+		reader:               e.reader,
+		mapper:               e.cfg.Mapper,
+		maxResults:           maxResults,
+		enforceSolutionLimit: true,
+		budgetRemaining:      maxScan,
+		allowTruncation:      allowTruncation,
+		org:                  org,
+		platform:             platform,
+		unfoldedBySubj:       make(map[Term][]rdfTriple),
 	}
 
-	if err := state.checkContext(); err != nil {
+	if err := state.checkContext(queryCtx); err != nil {
 		return nil, err
 	}
 
 	switch q.Form {
 	case QuerySelect:
-		return state.execSelect(q)
+		return state.execSelect(queryCtx, q)
 	case QueryAsk:
-		return state.execAsk(q)
+		return state.execAsk(queryCtx, q)
 	case QueryConstruct:
-		return state.execConstruct(q)
+		return state.execConstruct(queryCtx, q)
 	case QueryDescribe:
-		return state.execDescribe(q)
+		return state.execDescribe(queryCtx, q)
 	default:
 		return nil, fmt.Errorf("sparql: unsupported query form %v", q.Form)
 	}
 }
 
 type execState struct {
-	ctx              context.Context
-	reader           reader.GraphReader
-	mapper           *irimap.Mapper
-	maxResults       int
-	budgetRemaining  int
-	entitiesScanned  int
-	allowTruncation  bool
-	truncated        bool
-	truncationReason string
-	org              string
-	platform         string
-	unfoldedBySubj   map[Term][]rdfTriple
+	reader               reader.GraphReader
+	mapper               *irimap.Mapper
+	maxResults           int
+	enforceSolutionLimit bool
+	stopOnFirstSolution  bool
+	budgetRemaining      int
+	entitiesScanned      int
+	allowTruncation      bool
+	truncated            bool
+	truncationReason     string
+	org                  string
+	platform             string
+	unfoldedBySubj       map[Term][]rdfTriple
 }
 
 func (s *execState) markTruncated(reason string) {
@@ -266,8 +265,8 @@ func (s *execState) markTruncated(reason string) {
 	}
 }
 
-func (s *execState) checkContext() error {
-	if err := s.ctx.Err(); err != nil {
+func (s *execState) checkContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return newTimeoutError(err)
 		}
@@ -276,12 +275,12 @@ func (s *execState) checkContext() error {
 	return nil
 }
 
-func (s *execState) translateReaderError(err error) (bool, error) {
+func (s *execState) translateReaderError(ctx context.Context, err error) (bool, error) {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return false, newTimeoutError(err)
 	}
-	if s.ctx.Err() != nil && errors.Is(s.ctx.Err(), context.DeadlineExceeded) {
-		return false, newTimeoutError(s.ctx.Err())
+	if ctx.Err() != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return false, newTimeoutError(ctx.Err())
 	}
 	if errors.Is(err, reader.ErrScanBudgetExceeded) {
 		if s.allowTruncation {
@@ -318,7 +317,7 @@ func newTimeoutError(cause error) error {
 }
 
 func (s *execState) appendSolution(dst *[]Solution, sol Solution) (bool, error) {
-	if len(*dst) >= s.maxResults {
+	if s.enforceSolutionLimit && len(*dst) >= s.maxResults {
 		if s.allowTruncation {
 			s.markTruncated(TruncationReasonResultLimit)
 			return true, nil
@@ -326,10 +325,13 @@ func (s *execState) appendSolution(dst *[]Solution, sol Solution) (bool, error) 
 		return false, newResultLimitError(s.maxResults)
 	}
 	*dst = append(*dst, sol)
+	if s.stopOnFirstSolution && len(*dst) >= 1 {
+		return true, nil
+	}
 	return false, nil
 }
 
-func (s *execState) execAsk(q *Query) (*Result, error) {
+func (s *execState) execAsk(ctx context.Context, q *Query) (*Result, error) {
 	if s.maxResults <= 0 {
 		if s.allowTruncation {
 			s.markTruncated(TruncationReasonResultLimit)
@@ -343,8 +345,18 @@ func (s *execState) execAsk(q *Query) (*Result, error) {
 		}
 		return nil, newResultLimitError(s.maxResults)
 	}
-	solutions, err := s.evalGroup(q.Where, []Solution{{}})
+	// ASK only needs to know whether at least one solution satisfies WHERE.
+	// When the WHERE group has a single BGP step and no post-filters, stop immediately
+	// after the first matching solution; otherwise do not cap intermediate joins by maxResults.
+	s.enforceSolutionLimit = false
+	if canShortCircuitAskWhere(q.Where) {
+		s.stopOnFirstSolution = true
+	}
+	solutions, err := s.evalGroup(ctx, q.Where, []Solution{{}})
 	if err != nil {
+		return nil, err
+	}
+	if err := s.checkContext(ctx); err != nil {
 		return nil, err
 	}
 	return &Result{
@@ -356,16 +368,52 @@ func (s *execState) execAsk(q *Query) (*Result, error) {
 	}, nil
 }
 
-func (s *execState) execSelect(q *Query) (*Result, error) {
+func canShortCircuitAskWhere(g GroupPattern) bool {
+	if len(g.Filters) > 0 || len(g.Elements) != 1 {
+		return false
+	}
+	bgp, ok := g.Elements[0].(BGPPattern)
+	if !ok {
+		return false
+	}
+	cands := buildBGPCandidates(bgp)
+	return len(cands) == 1
+}
+
+func (s *execState) execSelect(ctx context.Context, q *Query) (*Result, error) {
+	if s.maxResults <= 0 {
+		if s.allowTruncation {
+			s.markTruncated(TruncationReasonResultLimit)
+			return &Result{
+				Form:             QuerySelect,
+				Variables:        selectVariables(q),
+				Solutions:        []Solution{},
+				EntitiesScanned:  s.entitiesScanned,
+				Truncated:        true,
+				TruncationReason: s.truncationReason,
+			}, nil
+		}
+		return nil, newResultLimitError(s.maxResults)
+	}
+
 	vars := selectVariables(q)
-	solutions, err := s.evalGroup(q.Where, []Solution{{}})
+	// When DISTINCT is requested, enforce MaxResults after deduplication rather
+	// than on pre-DISTINCT intermediate bindings.
+	s.enforceSolutionLimit = !q.Distinct
+	solutions, err := s.evalGroup(ctx, q.Where, []Solution{{}})
 	if err != nil {
+		return nil, err
+	}
+	if err := s.checkContext(ctx); err != nil {
 		return nil, err
 	}
 
 	// Sort deterministically before projection/DISTINCT/LIMIT/OFFSET so ORDER BY
 	// can reference non-projected variables and ties break deterministically.
 	sortSolutions(solutions, q.OrderBy, vars)
+	if err := s.checkContext(ctx); err != nil {
+		return nil, err
+	}
 
 	// Project only selected variables (stripping internal blank-node existential bindings).
 	projected := make([]Solution, 0, len(solutions))
@@ -379,9 +427,20 @@ func (s *execState) execSelect(q *Query) (*Result, error) {
 		projected = append(projected, p)
 	}
 
-	// Apply DISTINCT if requested.
+	// Apply DISTINCT if requested, then enforce MaxResults on the deduplicated rows.
 	if q.Distinct {
 		projected = deduplicateSolutions(projected, vars)
+		if err := s.checkContext(ctx); err != nil {
+			return nil, err
+		}
+		if len(projected) > s.maxResults {
+			if s.allowTruncation {
+				projected = projected[:s.maxResults]
+				s.markTruncated(TruncationReasonResultLimit)
+			} else {
+				return nil, newResultLimitError(s.maxResults)
+			}
+		}
 	}
 
 	// Apply OFFSET and LIMIT slicing.
@@ -398,6 +457,10 @@ func (s *execState) execSelect(q *Query) (*Result, error) {
 		} else if *q.Limit < len(projected) {
 			projected = projected[:*q.Limit]
 		}
+	}
+
+	if err := s.checkContext(ctx); err != nil {
+		return nil, err
 	}
 
 	return &Result{
@@ -448,7 +511,7 @@ func addTermVar(t Term, vars *[]string, seen map[string]bool) {
 	}
 }
 
-func (s *execState) evalGroup(g GroupPattern, current []Solution, outerDisallowed ...map[string]bool) ([]Solution, error) {
+func (s *execState) evalGroup(ctx context.Context, g GroupPattern, current []Solution, outerDisallowed ...map[string]bool) ([]Solution, error) {
 	baseDisallowed := mergeBoolMaps(outerDisallowed...)
 	for _, f := range g.Filters {
 		collectFilterExprVars(f, baseDisallowed)
@@ -456,7 +519,7 @@ func (s *execState) evalGroup(g GroupPattern, current []Solution, outerDisallowe
 
 	solutions := current
 	for idx, el := range g.Elements {
-		if err := s.checkContext(); err != nil {
+		if err := s.checkContext(ctx); err != nil {
 			return nil, err
 		}
 		if len(solutions) == 0 {
@@ -472,13 +535,20 @@ func (s *execState) evalGroup(g GroupPattern, current []Solution, outerDisallowe
 		var err error
 		switch p := el.(type) {
 		case BGPPattern:
-			solutions, err = s.evalBGP(p, solutions, elDisallowed)
+			solutions, err = s.evalBGP(ctx, p, solutions, elDisallowed)
 		case SubGroupPattern:
-			solutions, err = s.evalGroup(p.Group, solutions, elDisallowed)
+			// SPARQL 1.1 §5.2.2 / §18.2.2.6: evaluate nested group bottom-up in its
+			// own lexical scope so inner FILTERs only see variables bound inside the
+			// nested group, then join with outer solutions.
+			var inner []Solution
+			inner, err = s.evalGroup(ctx, p.Group, []Solution{{}}, elDisallowed)
+			if err == nil {
+				solutions, err = s.joinSolutions(ctx, solutions, inner)
+			}
 		case OptionalPattern:
-			solutions, err = s.evalOptional(p, solutions, elDisallowed)
+			solutions, err = s.evalOptional(ctx, p, solutions, elDisallowed)
 		case UnionPattern:
-			solutions, err = s.evalUnion(p, solutions, elDisallowed)
+			solutions, err = s.evalUnion(ctx, p, solutions, elDisallowed)
 		}
 		if err != nil {
 			return nil, err
@@ -491,11 +561,61 @@ func (s *execState) evalGroup(g GroupPattern, current []Solution, outerDisallowe
 
 	filtered := make([]Solution, 0, len(solutions))
 	for _, sol := range solutions {
+		if err := s.checkContext(ctx); err != nil {
+			return nil, err
+		}
 		if matchesAllFilters(g.Filters, sol) {
 			filtered = append(filtered, sol)
 		}
 	}
 	return filtered, nil
+}
+
+func (s *execState) joinSolutions(ctx context.Context, left, right []Solution) ([]Solution, error) {
+	if len(left) == 0 || len(right) == 0 {
+		return nil, nil
+	}
+	out := make([]Solution, 0, len(left))
+	for _, l := range left {
+		if err := s.checkContext(ctx); err != nil {
+			return nil, err
+		}
+		var stopped bool
+		for _, r := range right {
+			merged, ok := mergeCompatibleSolutions(l, r)
+			if !ok {
+				continue
+			}
+			stop, err := s.appendSolution(&out, merged)
+			if err != nil {
+				return nil, err
+			}
+			if stop {
+				stopped = true
+				break
+			}
+		}
+		if stopped {
+			break
+		}
+	}
+	return out, nil
+}
+
+func mergeCompatibleSolutions(a, b Solution) (Solution, bool) {
+	for k, bv := range b {
+		if av, exists := a[k]; exists && !termsMatch(av, bv) {
+			return nil, false
+		}
+	}
+	merged := make(Solution, len(a)+len(b))
+	for k, v := range a {
+		merged[k] = v
+	}
+	for k, v := range b {
+		merged[k] = v
+	}
+	return merged, true
 }
 
 func mergeBoolMaps(maps ...map[string]bool) map[string]bool {
@@ -562,13 +682,13 @@ func collectFilterExprVars(expr FilterExpr, dst map[string]bool) {
 	}
 }
 
-func (s *execState) evalOptional(opt OptionalPattern, current []Solution, outerDisallowed map[string]bool) ([]Solution, error) {
+func (s *execState) evalOptional(ctx context.Context, opt OptionalPattern, current []Solution, outerDisallowed map[string]bool) ([]Solution, error) {
 	out := make([]Solution, 0, len(current))
 	for _, sol := range current {
-		if err := s.checkContext(); err != nil {
+		if err := s.checkContext(ctx); err != nil {
 			return nil, err
 		}
-		ext, err := s.evalGroup(opt.Group, []Solution{sol.Clone()}, outerDisallowed)
+		ext, err := s.evalGroup(ctx, opt.Group, []Solution{sol.Clone()}, outerDisallowed)
 		if err != nil {
 			return nil, err
 		}
@@ -600,36 +720,29 @@ func (s *execState) evalOptional(opt OptionalPattern, current []Solution, outerD
 	return out, nil
 }
 
-func (s *execState) evalUnion(u UnionPattern, current []Solution, outerDisallowed map[string]bool) ([]Solution, error) {
-	out := make([]Solution, 0)
-	for _, branch := range u.Branches {
-		if err := s.checkContext(); err != nil {
-			return nil, err
-		}
-		seed := make([]Solution, len(current))
-		for i := range current {
-			seed[i] = current[i].Clone()
-		}
-		branchSols, err := s.evalGroup(branch, seed, outerDisallowed)
-		if err != nil {
-			return nil, err
-		}
-		var stopped bool
-		for _, sol := range branchSols {
-			stop, err := s.appendSolution(&out, sol)
-			if err != nil {
-				return nil, err
-			}
-			if stop {
-				stopped = true
-				break
-			}
-		}
-		if stopped {
-			break
-		}
+func (s *execState) evalUnion(ctx context.Context, u UnionPattern, current []Solution, outerDisallowed map[string]bool) ([]Solution, error) {
+	if len(current) == 0 {
+		return nil, nil
 	}
-	return out, nil
+	// SPARQL 1.1 §18.2.2.6: evaluate each UNION branch bottom-up in its own
+	// lexical scope, union the branch solution sequences, and join with current.
+	savedEnforce := s.enforceSolutionLimit
+	s.enforceSolutionLimit = false
+	unioned := make([]Solution, 0)
+	for _, branch := range u.Branches {
+		if err := s.checkContext(ctx); err != nil {
+			s.enforceSolutionLimit = savedEnforce
+			return nil, err
+		}
+		branchSols, err := s.evalGroup(ctx, branch, []Solution{{}}, outerDisallowed)
+		if err != nil {
+			s.enforceSolutionLimit = savedEnforce
+			return nil, err
+		}
+		unioned = append(unioned, branchSols...)
+	}
+	s.enforceSolutionLimit = savedEnforce
+	return s.joinSolutions(ctx, current, unioned)
 }
 
 type rdfTriple struct {
@@ -638,13 +751,7 @@ type rdfTriple struct {
 	Object    Term
 }
 
-type bgpExecItem struct {
-	isChain bool
-	chain   FoldedChain
-	triple  TriplePattern
-}
-
-func (s *execState) evalBGP(bgp BGPPattern, current []Solution, outerDisallowed map[string]bool) ([]Solution, error) {
+func (s *execState) evalBGP(ctx context.Context, bgp BGPPattern, current []Solution, outerDisallowed map[string]bool) ([]Solution, error) {
 	if len(bgp.Triples) == 0 || len(current) == 0 {
 		return current, nil
 	}
@@ -652,7 +759,7 @@ func (s *execState) evalBGP(bgp BGPPattern, current []Solution, outerDisallowed 
 	// Pre-check static emptiness before touching GraphReader.
 	for _, tp := range bgp.Triples {
 		step := classifySinglePatternWithScope(tp, s.mapper, s.org, s.platform)
-		if step.Kind == AccessEmpty {
+		if step.Kind == accessEmpty {
 			return nil, nil
 		}
 	}
@@ -664,29 +771,26 @@ func (s *execState) evalBGP(bgp BGPPattern, current []Solution, outerDisallowed 
 		}
 	}
 
-	folded := FoldProjections(bgp, disallowed)
-	items := make([]bgpExecItem, 0, len(folded.Chains)+len(folded.RemainingTriples))
-	for _, ch := range folded.Chains {
-		items = append(items, bgpExecItem{isChain: true, chain: ch})
-	}
-	for _, tp := range folded.RemainingTriples {
-		items = append(items, bgpExecItem{triple: tp})
-	}
-
+	candidates := buildBGPCandidates(bgp, disallowed)
 	solutions := current
-	for len(items) > 0 && len(solutions) > 0 {
-		if err := s.checkContext(); err != nil {
+	for len(candidates) > 0 && len(solutions) > 0 {
+		if err := s.checkContext(ctx); err != nil {
 			return nil, err
 		}
-		bestIdx := pickNextBGPItemIndex(items, solutions, s.mapper, s.org, s.platform)
-		item := items[bestIdx]
-		items = slices.Delete(items, bestIdx, bestIdx+1)
+		boundSubjects := allBoundVarsInSolutions(solutions)
+		boundObjIRIs := allBoundIRIVarsInSolutions(solutions)
+		bestIdx, step := pickNextBGPCandidate(candidates, boundSubjects, boundObjIRIs, s.mapper, s.org, s.platform)
+		if step.Kind == accessEmpty {
+			return nil, nil
+		}
+		cand := candidates[bestIdx]
+		candidates = slices.Delete(candidates, bestIdx, bestIdx+1)
 
 		var err error
-		if item.isChain {
-			solutions, err = s.evalFoldedChain(item.chain, solutions)
+		if cand.isChain {
+			solutions, err = s.evalFoldedChain(ctx, cand.chain, solutions)
 		} else {
-			solutions, err = s.evalTriplePattern(item.triple, solutions)
+			solutions, err = s.evalTriplePattern(ctx, cand.triple, solutions)
 		}
 		if err != nil {
 			return nil, err
@@ -696,58 +800,48 @@ func (s *execState) evalBGP(bgp BGPPattern, current []Solution, outerDisallowed 
 	return solutions, nil
 }
 
-func pickNextBGPItemIndex(items []bgpExecItem, solutions []Solution, mapper *irimap.Mapper, org, platform string) int {
-	bestIdx := 0
-	bestRank := dynamicBGPItemRank(items[0], solutions, mapper, org, platform)
-	for i := 1; i < len(items); i++ {
-		r := dynamicBGPItemRank(items[i], solutions, mapper, org, platform)
-		if r < bestRank {
-			bestIdx = i
-			bestRank = r
+func allBoundVarsInSolutions(solutions []Solution) map[string]bool {
+	if len(solutions) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(solutions[0]))
+	for k := range solutions[0] {
+		allHave := true
+		for i := 1; i < len(solutions); i++ {
+			if _, ok := solutions[i][k]; !ok {
+				allHave = false
+				break
+			}
+		}
+		if allHave {
+			out[k] = true
 		}
 	}
-	return bestIdx
+	return out
 }
 
-func dynamicBGPItemRank(item bgpExecItem, solutions []Solution, mapper *irimap.Mapper, org, platform string) int {
-	if item.isChain {
-		return dynamicFoldedChainRank(item.chain, solutions, mapper)
+func allBoundIRIVarsInSolutions(solutions []Solution) map[string]bool {
+	if len(solutions) == 0 {
+		return nil
 	}
-	return dynamicPatternRank(item.triple, solutions, mapper, org, platform)
-}
-
-func dynamicFoldedChainRank(ch FoldedChain, solutions []Solution, mapper *irimap.Mapper) int {
-	step := classifySingleFoldedChain(ch, mapper)
-	if step.Kind == AccessEmpty {
-		return 0
+	out := make(map[string]bool, len(solutions[0]))
+	for k, v0 := range solutions[0] {
+		if v0.Kind != TermIRI {
+			continue
+		}
+		allIRI := true
+		for i := 1; i < len(solutions); i++ {
+			vi, ok := solutions[i][k]
+			if !ok || vi.Kind != TermIRI {
+				allIRI = false
+				break
+			}
+		}
+		if allIRI {
+			out[k] = true
+		}
 	}
-	if step.Kind <= AccessExactEntity {
-		return int(step.Kind) * 10
-	}
-	if allSubjectsBound(ch.Subject, solutions) {
-		return int(AccessExactEntity)*10 + 5
-	}
-	return int(step.Kind) * 10
-}
-
-func dynamicPatternRank(tp TriplePattern, solutions []Solution, mapper *irimap.Mapper, org, platform string) int {
-	step := classifySinglePatternWithScope(tp, mapper, org, platform)
-	if step.Kind == AccessEmpty {
-		return 0
-	}
-	if tp.IsStandaloneSubClassPath() {
-		return int(AccessExactEntity)*10 - 5
-	}
-	if step.Kind <= AccessExactEntity {
-		return int(step.Kind) * 10
-	}
-	if allSubjectsBound(tp.Subject, solutions) {
-		return int(AccessExactEntity)*10 + 5
-	}
-	if step.Kind > AccessTypePattern && (tp.IsPlainRDFType() || tp.IsRDFTypeWithSubClassPath()) && allObjectsBoundToIRIs(tp.Object, solutions) {
-		return int(AccessTypePattern)*10 + 5
-	}
-	return int(step.Kind) * 10
+	return out
 }
 
 func allSubjectsBound(subj Term, solutions []Solution) bool {
@@ -789,7 +883,7 @@ type foldedChainMatch struct {
 	Object        Term
 }
 
-func (s *execState) evalFoldedChain(ch FoldedChain, solutions []Solution) ([]Solution, error) {
+func (s *execState) evalFoldedChain(ctx context.Context, ch FoldedChain, solutions []Solution) ([]Solution, error) {
 	if len(ch.Predicates) == 0 || ch.Subject.Kind == TermLiteral {
 		return nil, nil
 	}
@@ -819,9 +913,9 @@ func (s *execState) evalFoldedChain(ch FoldedChain, solutions []Solution) ([]Sol
 		if len(entityIDs) == 0 {
 			return nil, nil
 		}
-		entities, err = s.readEntitiesByIDs(entityIDs)
+		entities, err = s.readEntitiesByIDs(ctx, entityIDs)
 	} else {
-		entities, err = s.readEntitiesByPredicates(ch.Predicates)
+		entities, err = s.readEntitiesByPredicates(ctx, ch.Predicates)
 	}
 	if err != nil || len(entities) == 0 {
 		return nil, err
@@ -830,6 +924,9 @@ func (s *execState) evalFoldedChain(ch FoldedChain, solutions []Solution) ([]Sol
 	var allMatches []foldedChainMatch
 	matchesBySubj := make(map[Term][]foldedChainMatch, len(entities))
 	for i := range entities {
+		if err := s.checkContext(ctx); err != nil {
+			return nil, err
+		}
 		ms, err := s.extractFoldedChainMatches(&entities[i], ch)
 		if err != nil {
 			return nil, err
@@ -842,6 +939,9 @@ func (s *execState) evalFoldedChain(ch FoldedChain, solutions []Solution) ([]Sol
 
 	next := make([]Solution, 0)
 	for _, sol := range solutions {
+		if err := s.checkContext(ctx); err != nil {
+			return nil, err
+		}
 		var candidates []foldedChainMatch
 		if boundSubj {
 			subj := resolveTerm(ch.Subject, sol)
@@ -947,21 +1047,21 @@ func matchFoldedChain(ch FoldedChain, m foldedChainMatch, sol Solution) (Solutio
 	return ext, true
 }
 
-func (s *execState) evalTriplePattern(tp TriplePattern, solutions []Solution) ([]Solution, error) {
+func (s *execState) evalTriplePattern(ctx context.Context, tp TriplePattern, solutions []Solution) ([]Solution, error) {
 	if tp.IsStandaloneSubClassPath() {
-		return s.evalStandaloneSubClassPath(tp, solutions)
+		return s.evalStandaloneSubClassPath(ctx, tp, solutions)
 	}
 
 	step := classifySinglePatternWithScope(tp, s.mapper, s.org, s.platform)
-	if step.Kind == AccessEmpty {
+	if step.Kind == accessEmpty {
 		return nil, nil
 	}
 
 	if allSubjectsBound(tp.Subject, solutions) {
-		return s.evalBoundSubjectPattern(tp, step.Predicates, solutions)
+		return s.evalBoundSubjectPattern(ctx, tp, step.Predicates, solutions)
 	}
 
-	if step.Kind == AccessFullScan && (tp.IsPlainRDFType() || tp.IsRDFTypeWithSubClassPath()) && allObjectsBoundToIRIs(tp.Object, solutions) {
+	if step.Kind == accessFullScan && (tp.IsPlainRDFType() || tp.IsRDFTypeWithSubClassPath()) && allObjectsBoundToIRIs(tp.Object, solutions) {
 		upgraded, ok := s.resolveBoundObjectTypePatterns(tp.Object, step, solutions)
 		if !ok {
 			return nil, nil
@@ -974,21 +1074,25 @@ func (s *execState) evalTriplePattern(tp TriplePattern, solutions []Solution) ([
 		err      error
 	)
 	switch step.Kind {
-	case AccessTypePattern:
-		entities, err = s.readEntitiesByPatterns(step.Patterns)
+	case accessTypePattern:
+		// Per owner ruling on Issue #1 (#issuecomment-6224587243) and §2.2.3 #4,
+		// bound registered-class `?s a <C>` / `?s rdf:type/rdfs:subClassOf* <C>`
+		// scans only `<org>.<platform>.*.<domain>.<type>.*` patterns (plus any
+		// ProjectionPredicatesForNodeClass(C)) so non-matching entities never cross NATS.
+		entities, err = s.readEntitiesByPatterns(ctx, step.Patterns)
 		if err == nil {
 			if projPreds := nodeClassPredicatesForTypePattern(tp, solutions); len(projPreds) > 0 {
-				extra, perr := s.readEntitiesByPredicates(projPreds)
+				extra, perr := s.readEntitiesByPredicates(ctx, projPreds)
 				if perr != nil {
 					return nil, perr
 				}
 				entities = mergeEntitiesByID(entities, extra)
 			}
 		}
-	case AccessPredicate:
-		entities, err = s.readEntitiesByPredicates(step.Predicates)
+	case accessPredicate:
+		entities, err = s.readEntitiesByPredicates(ctx, step.Predicates)
 	default:
-		entities, err = s.readAllEntities()
+		entities, err = s.readAllEntities(ctx)
 	}
 	if err != nil {
 		return nil, err
@@ -999,6 +1103,9 @@ func (s *execState) evalTriplePattern(tp TriplePattern, solutions []Solution) ([
 
 	allTriples := make([]rdfTriple, 0, len(entities)*2)
 	for i := range entities {
+		if err := s.checkContext(ctx); err != nil {
+			return nil, err
+		}
 		ets, err := s.entityToRDFTriples(&entities[i], step.Predicates)
 		if err != nil {
 			return nil, err
@@ -1008,6 +1115,9 @@ func (s *execState) evalTriplePattern(tp TriplePattern, solutions []Solution) ([
 
 	next := make([]Solution, 0)
 	for _, sol := range solutions {
+		if err := s.checkContext(ctx); err != nil {
+			return nil, err
+		}
 		var stopped bool
 		for _, rt := range allTriples {
 			if ext, ok := matchTriplePattern(tp, rt, sol); ok {
@@ -1072,7 +1182,7 @@ func mergeEntitiesByID(a, b []graph.EntityState) []graph.EntityState {
 	return out
 }
 
-func (s *execState) resolveBoundObjectTypePatterns(obj Term, step PlanStep, solutions []Solution) (PlanStep, bool) {
+func (s *execState) resolveBoundObjectTypePatterns(obj Term, step planStep, solutions []Solution) (planStep, bool) {
 	var patterns []string
 	preds := []string{RDFTypeIRI}
 	hasUnregistered := false
@@ -1097,24 +1207,24 @@ func (s *execState) resolveBoundObjectTypePatterns(obj Term, step PlanStep, solu
 	slices.Sort(patterns)
 	patterns = slices.Compact(patterns)
 	if len(patterns) > 0 && !hasUnregistered {
-		step.Kind = AccessTypePattern
+		step.Kind = accessTypePattern
 		step.Patterns = patterns
 		return step, true
 	}
 	if len(patterns) == 0 && hasUnregistered {
-		step.Kind = AccessPredicate
+		step.Kind = accessPredicate
 		return step, true
 	}
 	return step, true
 }
 
-func (s *execState) evalStandaloneSubClassPath(tp TriplePattern, solutions []Solution) ([]Solution, error) {
+func (s *execState) evalStandaloneSubClassPath(ctx context.Context, tp TriplePattern, solutions []Solution) ([]Solution, error) {
 	if tp.Subject.Kind == TermLiteral || tp.Object.Kind == TermLiteral {
 		return nil, nil
 	}
 	next := make([]Solution, 0)
 	for _, sol := range solutions {
-		if err := s.checkContext(); err != nil {
+		if err := s.checkContext(ctx); err != nil {
 			return nil, err
 		}
 		subIRI, okSub := boundIRIFromPatternTerm(tp.Subject, sol)
@@ -1164,7 +1274,7 @@ func boundIRIFromPatternTerm(t Term, sol Solution) (string, bool) {
 	return "", false
 }
 
-func (s *execState) evalBoundSubjectPattern(tp TriplePattern, candidatePreds []string, solutions []Solution) ([]Solution, error) {
+func (s *execState) evalBoundSubjectPattern(ctx context.Context, tp TriplePattern, candidatePreds []string, solutions []Solution) ([]Solution, error) {
 	idSet := make(map[string]struct{}, len(solutions))
 	entityIDs := make([]string, 0, len(solutions))
 	hasUnseenBNode := false
@@ -1189,11 +1299,14 @@ func (s *execState) evalBoundSubjectPattern(tp TriplePattern, candidatePreds []s
 
 	triplesBySubj := make(map[string][]rdfTriple, len(entityIDs))
 	if len(entityIDs) > 0 {
-		entities, err := s.readEntitiesByIDs(entityIDs)
+		entities, err := s.readEntitiesByIDs(ctx, entityIDs)
 		if err != nil {
 			return nil, err
 		}
 		for i := range entities {
+			if err := s.checkContext(ctx); err != nil {
+				return nil, err
+			}
 			subjIRI, err := s.mapper.EntityIDToIRI(entities[i].ID)
 			if err != nil {
 				return nil, err
@@ -1212,14 +1325,17 @@ func (s *execState) evalBoundSubjectPattern(tp TriplePattern, candidatePreds []s
 			err           error
 		)
 		if len(candidatePreds) > 0 {
-			bnodeEntities, err = s.readEntitiesByPredicates(candidatePreds)
+			bnodeEntities, err = s.readEntitiesByPredicates(ctx, candidatePreds)
 		} else {
-			bnodeEntities, err = s.readAllEntities()
+			bnodeEntities, err = s.readAllEntities(ctx)
 		}
 		if err != nil {
 			return nil, err
 		}
 		for i := range bnodeEntities {
+			if err := s.checkContext(ctx); err != nil {
+				return nil, err
+			}
 			if _, err := s.entityToRDFTriples(&bnodeEntities[i], nil); err != nil {
 				return nil, err
 			}
@@ -1228,6 +1344,9 @@ func (s *execState) evalBoundSubjectPattern(tp TriplePattern, candidatePreds []s
 
 	next := make([]Solution, 0)
 	for _, sol := range solutions {
+		if err := s.checkContext(ctx); err != nil {
+			return nil, err
+		}
 		subj := resolveTerm(tp.Subject, sol)
 		var candidates []rdfTriple
 		switch subj.Kind {
@@ -1258,13 +1377,13 @@ func (s *execState) evalBoundSubjectPattern(tp TriplePattern, candidatePreds []s
 	return next, nil
 }
 
-func (s *execState) readEntitiesByIDs(entityIDs []string) ([]graph.EntityState, error) {
+func (s *execState) readEntitiesByIDs(ctx context.Context, entityIDs []string) ([]graph.EntityState, error) {
 	slices.Sort(entityIDs)
 	entityIDs = slices.Compact(entityIDs)
 	if len(entityIDs) == 0 {
 		return nil, nil
 	}
-	if err := s.checkContext(); err != nil {
+	if err := s.checkContext(ctx); err != nil {
 		return nil, err
 	}
 	if s.budgetRemaining <= 0 {
@@ -1276,12 +1395,12 @@ func (s *execState) readEntitiesByIDs(entityIDs []string) ([]graph.EntityState, 
 	}
 
 	if len(entityIDs) == 1 {
-		ent, err := s.reader.GetEntity(s.ctx, entityIDs[0])
+		ent, err := s.reader.GetEntity(ctx, entityIDs[0])
 		if err != nil {
 			if errors.Is(err, reader.ErrEntityNotFound) {
 				return nil, nil
 			}
-			_, rerr := s.translateReaderError(err)
+			_, rerr := s.translateReaderError(ctx, err)
 			return nil, rerr
 		}
 		s.budgetRemaining--
@@ -1289,9 +1408,9 @@ func (s *execState) readEntitiesByIDs(entityIDs []string) ([]graph.EntityState, 
 		return []graph.EntityState{*ent}, nil
 	}
 
-	resp, err := s.reader.GetBatch(s.ctx, entityIDs)
+	resp, err := s.reader.GetBatch(ctx, entityIDs)
 	if err != nil {
-		_, rerr := s.translateReaderError(err)
+		_, rerr := s.translateReaderError(ctx, err)
 		return nil, rerr
 	}
 	for _, m := range resp.Missing {
@@ -1314,10 +1433,10 @@ func (s *execState) readEntitiesByIDs(entityIDs []string) ([]graph.EntityState, 
 	return resp.Entities, nil
 }
 
-func (s *execState) readEntitiesByPredicates(predicates []string) ([]graph.EntityState, error) {
+func (s *execState) readEntitiesByPredicates(ctx context.Context, predicates []string) ([]graph.EntityState, error) {
 	byID := make(map[string]graph.EntityState)
 	for _, pred := range predicates {
-		if err := s.checkContext(); err != nil {
+		if err := s.checkContext(ctx); err != nil {
 			return nil, err
 		}
 		if s.budgetRemaining <= 0 {
@@ -1327,20 +1446,23 @@ func (s *execState) readEntitiesByPredicates(predicates []string) ([]graph.Entit
 			}
 			return nil, newScanBudgetError(reader.ErrScanBudgetExceeded)
 		}
-		ents, err := s.reader.EntitiesByPredicate(s.ctx, pred, s.budgetRemaining)
+		var scanned int
+		scanCtx := reader.WithScanCounter(ctx, &scanned)
+		ents, err := s.reader.EntitiesByPredicate(scanCtx, pred, s.budgetRemaining)
+		charged := max(scanned, len(ents))
+		s.budgetRemaining = max(0, s.budgetRemaining-charged)
+		s.entitiesScanned += charged
+		for i := range ents {
+			byID[ents[i].ID] = ents[i]
+		}
 		if err != nil {
-			stop, rerr := s.translateReaderError(err)
+			stop, rerr := s.translateReaderError(ctx, err)
 			if rerr != nil {
 				return nil, rerr
 			}
 			if stop {
 				break
 			}
-		}
-		s.budgetRemaining -= len(ents)
-		s.entitiesScanned += len(ents)
-		for i := range ents {
-			byID[ents[i].ID] = ents[i]
 		}
 	}
 	if len(byID) == 0 {
@@ -1358,10 +1480,10 @@ func (s *execState) readEntitiesByPredicates(predicates []string) ([]graph.Entit
 	return out, nil
 }
 
-func (s *execState) readEntitiesByPatterns(patterns []string) ([]graph.EntityState, error) {
+func (s *execState) readEntitiesByPatterns(ctx context.Context, patterns []string) ([]graph.EntityState, error) {
 	byID := make(map[string]graph.EntityState)
 	for _, pattern := range patterns {
-		if err := s.checkContext(); err != nil {
+		if err := s.checkContext(ctx); err != nil {
 			return nil, err
 		}
 		if s.budgetRemaining <= 0 {
@@ -1371,20 +1493,20 @@ func (s *execState) readEntitiesByPatterns(patterns []string) ([]graph.EntitySta
 			}
 			return nil, newScanBudgetError(reader.ErrScanBudgetExceeded)
 		}
-		ents, err := s.reader.ScanPattern(s.ctx, pattern, s.budgetRemaining)
+		ents, err := s.reader.ScanPattern(ctx, pattern, s.budgetRemaining)
+		s.budgetRemaining = max(0, s.budgetRemaining-len(ents))
+		s.entitiesScanned += len(ents)
+		for i := range ents {
+			byID[ents[i].ID] = ents[i]
+		}
 		if err != nil {
-			stop, rerr := s.translateReaderError(err)
+			stop, rerr := s.translateReaderError(ctx, err)
 			if rerr != nil {
 				return nil, rerr
 			}
 			if stop {
 				break
 			}
-		}
-		s.budgetRemaining -= len(ents)
-		s.entitiesScanned += len(ents)
-		for i := range ents {
-			byID[ents[i].ID] = ents[i]
 		}
 	}
 	if len(byID) == 0 {
@@ -1402,8 +1524,8 @@ func (s *execState) readEntitiesByPatterns(patterns []string) ([]graph.EntitySta
 	return out, nil
 }
 
-func (s *execState) readAllEntities() ([]graph.EntityState, error) {
-	if err := s.checkContext(); err != nil {
+func (s *execState) readAllEntities(ctx context.Context) ([]graph.EntityState, error) {
+	if err := s.checkContext(ctx); err != nil {
 		return nil, err
 	}
 	if s.budgetRemaining <= 0 {
@@ -1413,18 +1535,18 @@ func (s *execState) readAllEntities() ([]graph.EntityState, error) {
 		}
 		return nil, newScanBudgetError(reader.ErrScanBudgetExceeded)
 	}
-	ents, err := s.reader.ScanPattern(s.ctx, reader.MatchAllPattern, s.budgetRemaining)
+	ents, err := s.reader.ScanPattern(ctx, reader.MatchAllPattern, s.budgetRemaining)
+	s.budgetRemaining = max(0, s.budgetRemaining-len(ents))
+	s.entitiesScanned += len(ents)
 	if err != nil {
-		stop, rerr := s.translateReaderError(err)
+		stop, rerr := s.translateReaderError(ctx, err)
 		if rerr != nil {
 			return nil, rerr
 		}
 		if stop {
-			return nil, nil
+			return ents, nil
 		}
 	}
-	s.budgetRemaining -= len(ents)
-	s.entitiesScanned += len(ents)
 	return ents, nil
 }
 
@@ -1579,34 +1701,21 @@ func normalizeSourceTripleDatatype(tr message.Triple) message.Triple {
 }
 
 // resolveTripleTerms delegates predicate IRI resolution and object RDF
-// classification to semengine/vocabulary/export via single-triple N-Triples
-// serialization, returning the predicate Term, object Term, and canonical
-// N-Triples object token without copying exporter classification rules.
+// classification to irimap.CanonicalNTriplesPredicateAndObject (which wraps
+// semengine/vocabulary/export single-triple N-Triples serialization), returning
+// the predicate Term, object Term, and canonical N-Triples object token without
+// duplicating exporter classification rules.
 func resolveTripleTerms(tr message.Triple, baseIRI string) (predTerm, objTerm Term, canonObj string, ok bool, err error) {
 	if strings.TrimSpace(tr.Predicate) == "" || tr.Object == nil {
 		return Term{}, Term{}, "", false, nil
 	}
-	normTr := normalizeSourceTripleDatatype(tr)
-	probe := message.Triple{
-		Subject:   "_:s",
-		Predicate: normTr.Predicate,
-		Object:    normTr.Object,
-		Datatype:  normTr.Datatype,
-	}
-	line, err := export.SerializeToString([]message.Triple{probe}, export.NTriples, export.WithBaseIRI(baseIRI))
+	predIRI, canonObj, err := irimap.CanonicalNTriplesPredicateAndObject(tr, baseIRI)
 	if err != nil {
+		if errors.Is(err, irimap.ErrTripleRejectedByExporter) {
+			return Term{}, Term{}, "", false, nil
+		}
 		return Term{}, Term{}, "", false, err
 	}
-	if line == "" {
-		return Term{}, Term{}, "", false, nil
-	}
-	const prefix = "_:s <"
-	idx := strings.Index(line, "> ")
-	if !strings.HasPrefix(line, prefix) || idx < len(prefix) || !strings.HasSuffix(line, " .\n") {
-		return Term{}, Term{}, "", false, fmt.Errorf("sparql: unexpected N-Triples probe line %q", line)
-	}
-	predIRI := line[len(prefix):idx]
-	canonObj = line[idx+2 : len(line)-3]
 	objTerm, err = parseNTriplesObjectTerm(canonObj)
 	if err != nil {
 		return Term{}, Term{}, "", false, err
@@ -1621,33 +1730,44 @@ func parseNTriplesObjectTerm(ntObj string) (Term, error) {
 	case strings.HasPrefix(ntObj, "_:"):
 		return Term{Kind: TermBlankNode, Value: ntObj}, nil
 	case strings.HasPrefix(ntObj, `"`):
-		var dtIRI, lang string
-		rest := ntObj
-		if strings.HasSuffix(rest, ">") {
-			sep := strings.LastIndex(rest, `"^^<`)
-			if sep < 1 {
-				return Term{}, fmt.Errorf("sparql: malformed typed literal %q", ntObj)
+		// Scan from opening quote using escape-aware indexing so escaped quotes
+		// inside string literals (e.g. `say \"@bob\"` or `say \"^^<urn:x>\"`)
+		// are never mistaken for closing quotes or language/datatype suffixes.
+		closeIdx := -1
+		for i := 1; i < len(ntObj); i++ {
+			if ntObj[i] == '\\' {
+				i++
+				continue
 			}
-			dtIRI = rest[sep+4 : len(rest)-1]
-			rest = rest[:sep+1]
+			if ntObj[i] == '"' {
+				closeIdx = i
+				break
+			}
+		}
+		if closeIdx < 1 {
+			return Term{}, fmt.Errorf("sparql: malformed literal %q", ntObj)
+		}
+		rawLex := ntObj[1:closeIdx]
+		suffix := ntObj[closeIdx+1:]
+		var dtIRI, lang string
+		switch {
+		case suffix == "":
+			dtIRI = XSDStringIRI
+		case strings.HasPrefix(suffix, "^^<") && strings.HasSuffix(suffix, ">") && len(suffix) > 4:
+			dtIRI = suffix[3 : len(suffix)-1]
 			if strings.HasPrefix(dtIRI, "@") && len(dtIRI) > 1 {
 				lang = strings.ToLower(dtIRI[1:])
 				dtIRI = RDFLangStringIRI
 			}
-		} else if sep := strings.LastIndex(rest, `"@`); sep >= 1 {
-			lang = strings.ToLower(rest[sep+2:])
+		case strings.HasPrefix(suffix, "@") && len(suffix) > 1:
+			lang = strings.ToLower(suffix[1:])
 			dtIRI = RDFLangStringIRI
-			rest = rest[:sep+1]
+		default:
+			return Term{}, fmt.Errorf("sparql: malformed literal suffix in %q", ntObj)
 		}
-		if len(rest) < 2 || rest[0] != '"' || rest[len(rest)-1] != '"' {
-			return Term{}, fmt.Errorf("sparql: malformed literal %q", ntObj)
-		}
-		lex, err := unescapeNTriplesLiteral(rest[1 : len(rest)-1])
+		lex, err := unescapeNTriplesLiteral(rawLex)
 		if err != nil {
 			return Term{}, err
-		}
-		if dtIRI == "" {
-			dtIRI = XSDStringIRI
 		}
 		return Term{
 			Kind:     TermLiteral,
@@ -2225,8 +2345,41 @@ func collectTieBreakVars(solutions []Solution, projectedVars []string) []string 
 	return append(out, extra...)
 }
 
-// compareTermsTotalOrder implements the SPARQL 1.1 §15.1 total order:
-// Unbound < BlankNode < IRI < Literal.
+const (
+	litCatSimpleString = iota + 1
+	litCatLangString
+	litCatNumeric
+	litCatBoolean
+	litCatDateTime
+	litCatOther
+)
+
+func literalCategory(t Term, dt string) int {
+	if t.Language != "" || dt == RDFLangStringIRI {
+		return litCatLangString
+	}
+	switch dt {
+	case XSDStringIRI:
+		return litCatSimpleString
+	case XSDIntegerIRI, XSDDecimalIRI, XSDDoubleIRI:
+		if f, err := strconv.ParseFloat(t.Value, 64); err == nil && !math.IsNaN(f) {
+			return litCatNumeric
+		}
+	case XSDBooleanIRI:
+		if _, ok := termEBV(t); ok {
+			return litCatBoolean
+		}
+	case XSDDateTimeIRI:
+		if _, err := time.Parse(time.RFC3339Nano, t.Value); err == nil {
+			return litCatDateTime
+		}
+	}
+	return litCatOther
+}
+
+// compareTermsTotalOrder implements a strictly transitive SPARQL 1.1 §15.1 total order:
+// Unbound < BlankNode < IRI < Literal (ordered by literal category rank first,
+// then value-space comparison within category, then lexical/datatype tie-break).
 func compareTermsTotalOrder(a Term, oka bool, b Term, okb bool) int {
 	if !oka && !okb {
 		return 0
@@ -2248,43 +2401,59 @@ func compareTermsTotalOrder(a Term, oka bool, b Term, okb bool) int {
 
 	dtA := normalizeDatatypeIRI(a.Datatype)
 	dtB := normalizeDatatypeIRI(b.Datatype)
-	if isNumericDatatype(dtA) && isNumericDatatype(dtB) {
-		fa, errA := strconv.ParseFloat(a.Value, 64)
-		fb, errB := strconv.ParseFloat(b.Value, 64)
-		if errA == nil && errB == nil {
-			if c := cmp.Compare(fa, fb); c != 0 {
-				return c
+	catA := literalCategory(a, dtA)
+	catB := literalCategory(b, dtB)
+	if catA != catB {
+		return cmp.Compare(catA, catB)
+	}
+
+	switch catA {
+	case litCatSimpleString:
+		return cmp.Compare(a.Value, b.Value)
+	case litCatLangString:
+		if c := cmp.Compare(strings.ToLower(a.Language), strings.ToLower(b.Language)); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(a.Language, b.Language); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Value, b.Value)
+	case litCatNumeric:
+		if dtA == XSDIntegerIRI && dtB == XSDIntegerIRI {
+			ia, errA := strconv.ParseInt(a.Value, 10, 64)
+			ib, errB := strconv.ParseInt(b.Value, 10, 64)
+			if errA == nil && errB == nil {
+				if c := cmp.Compare(ia, ib); c != 0 {
+					return c
+				}
 			}
 		}
-	}
-	if dtA == XSDBooleanIRI && dtB == XSDBooleanIRI {
-		ba, oka := termEBV(a)
-		bb, okb := termEBV(b)
-		if oka && okb {
-			if c := compareBools(ba, bb); c != 0 {
-				return c
-			}
+		fa, _ := strconv.ParseFloat(a.Value, 64)
+		fb, _ := strconv.ParseFloat(b.Value, 64)
+		if c := cmp.Compare(fa, fb); c != 0 {
+			return c
+		}
+	case litCatBoolean:
+		ba, _ := termEBV(a)
+		bb, _ := termEBV(b)
+		if c := compareBools(ba, bb); c != 0 {
+			return c
+		}
+	case litCatDateTime:
+		ta, _ := time.Parse(time.RFC3339Nano, a.Value)
+		tb, _ := time.Parse(time.RFC3339Nano, b.Value)
+		if ta.Before(tb) {
+			return -1
+		}
+		if ta.After(tb) {
+			return 1
 		}
 	}
-	if dtA == XSDDateTimeIRI && dtB == XSDDateTimeIRI {
-		ta, errA := time.Parse(time.RFC3339Nano, a.Value)
-		tb, errB := time.Parse(time.RFC3339Nano, b.Value)
-		if errA == nil && errB == nil {
-			if ta.Before(tb) {
-				return -1
-			}
-			if ta.After(tb) {
-				return 1
-			}
-		}
-	}
-	if c := cmp.Compare(a.Value, b.Value); c != 0 {
+
+	if c := cmp.Compare(dtA, dtB); c != 0 {
 		return c
 	}
-	if c := cmp.Compare(a.Language, b.Language); c != 0 {
-		return c
-	}
-	return cmp.Compare(dtA, dtB)
+	return cmp.Compare(a.Value, b.Value)
 }
 
 func termOrderRank(k TermKind) int {

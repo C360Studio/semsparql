@@ -7,8 +7,11 @@ import (
 	"testing"
 )
 
-// Split so this file does not contain the literal it forbids.
-var sleepLiteral = "time." + "Sleep"
+// Split so this file does not contain the literals it forbids.
+var (
+	sleepLiteral = "time." + "Sleep"
+	afterLiteral = "time." + "After("
+)
 
 func TestNoSleepsInTests(t *testing.T) {
 	root := repoRoot(t)
@@ -32,6 +35,9 @@ func TestNoSleepsInTestsSensitivity(t *testing.T) {
 		{"sleep in a test file", map[string]string{
 			"x/x_test.go": "package x\n\nfunc TestX(t *testing.T) {\n\t" + sleepLiteral + "(10 * time.Millisecond)\n}\n",
 		}, []string{"x/x_test.go:4", sleepLiteral}},
+		{"time.After in a test file", map[string]string{
+			"x/x_test.go": "package x\n\nfunc TestX(t *testing.T) {\n\t<-" + afterLiteral + "10 * time.Millisecond)\n}\n",
+		}, []string{"x/x_test.go:4", "time.After"}},
 		{"sleep in harness code", map[string]string{
 			"x/x_test.go":                "package x\n",
 			"internal/harness/h/wait.go": "package h\n\nfunc wait() {\n\t" + sleepLiteral + "(time.Second)\n}\n",
@@ -54,6 +60,9 @@ func sleepViolations(t *testing.T, root string, files []string) []string {
 	return scanTestText(t, root, files, inScope, func(line string) string {
 		if strings.Contains(line, sleepLiteral) {
 			return "`" + sleepLiteral + "`; wait on a channel, callback or synctest bubble instead"
+		}
+		if strings.Contains(line, afterLiteral) {
+			return "`time." + "After`; wait on a channel, callback or synctest bubble instead"
 		}
 		return ""
 	})
@@ -139,14 +148,15 @@ func TestNoHiddenTestsSensitivity(t *testing.T) {
 	requireNoViolations(t, "integration-tagged fixture", buildTagViolations(t, root, files))
 	requireNoViolations(t, "integration-tagged fixture", skipViolations(t, root, files))
 
-	for _, tc := range []struct{ name, content, want string }{
-		{"other tag", "//go:build flaky\n\npackage x\n", "//go:build flaky"},
-		{"integration combined", "//go:build integration && linux\n\npackage x\n", "//go:build integration && linux"},
-		{"legacy form", "// +build flaky\n\npackage x\n", "// +build flaky"},
+	for _, tc := range []struct{ name, file, content, want string }{
+		{"other tag", "x/x_test.go", "//go:build flaky\n\npackage x\n", "//go:build flaky"},
+		{"integration combined", "x/x_test.go", "//go:build integration && linux\n\npackage x\n", "//go:build integration && linux"},
+		{"legacy form", "x/x_test.go", "// +build flaky\n\npackage x\n", "// +build flaky"},
+		{"platform filename suffix", "x/x_linux_test.go", "package x\n", "platform/arch test filename suffix"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root, files := writeTree(t, map[string]string{"x/x_test.go": tc.content})
-			requireViolation(t, buildTagViolations(t, root, files), "x/x_test.go:1", tc.want)
+			root, files := writeTree(t, map[string]string{tc.file: tc.content})
+			requireViolation(t, buildTagViolations(t, root, files), tc.file, tc.want)
 		})
 	}
 	t.Run("no test file", func(t *testing.T) {
@@ -155,8 +165,21 @@ func TestNoHiddenTestsSensitivity(t *testing.T) {
 	})
 }
 
+var forbiddenTestFileSuffixes = []string{
+	"_linux_test.go",
+	"_darwin_test.go",
+	"_windows_test.go",
+	"_freebsd_test.go",
+	"_openbsd_test.go",
+	"_netbsd_test.go",
+	"_unix_test.go",
+	"_amd64_test.go",
+	"_arm64_test.go",
+	"_386_test.go",
+}
+
 // buildTagViolations reads each test file's header, the lines before its package clause, where Go
-// accepts build constraints.
+// accepts build constraints, and checks for implicit GOOS/GOARCH filename build constraints.
 func buildTagViolations(t *testing.T, root string, files []string) []string {
 	t.Helper()
 	var violations []string
@@ -166,6 +189,11 @@ func buildTagViolations(t *testing.T, root string, files []string) []string {
 			continue
 		}
 		tests++
+		for _, suf := range forbiddenTestFileSuffixes {
+			if strings.HasSuffix(name, suf) {
+				violations = append(violations, fmt.Sprintf("%s:1: platform/arch test filename suffix `%s` is forbidden; only `//go:build integration` may gate a test", name, suf))
+			}
+		}
 		for i, line := range readLines(t, root, name) {
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "package ") {

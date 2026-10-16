@@ -32,8 +32,10 @@ var (
 	}
 
 	// ErrScanBudgetExceeded indicates a scan or predicate lookup exceeded the
-	// caller's entity-read budget. Scans fail closed rather than returning a
-	// silently truncated prefix.
+	// caller's entity-read budget. Readers return the bounded prefix of up to
+	// budget entities alongside ErrScanBudgetExceeded so callers without
+	// explicit truncation consent fail closed while callers with
+	// X-Semsparql-Allow-Truncation: true can emit the bounded partial set.
 	ErrScanBudgetExceeded = errors.New("reader: scan budget exceeded")
 )
 
@@ -149,4 +151,24 @@ func entityHasPredicate(entity *graph.EntityState, predicate string) bool {
 		}
 	}
 	return false
+}
+
+type scanCountKey struct{}
+
+// WithScanCounter returns a derived context that accumulates the number of
+// entities scanned by ScanPrefix, ScanPattern, or EntitiesByPredicate into *count.
+func WithScanCounter(ctx context.Context, count *int) context.Context {
+	if ctx == nil || count == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, scanCountKey{}, count)
+}
+
+func recordScannedEntity(ctx context.Context, n int) {
+	if n <= 0 || ctx == nil {
+		return
+	}
+	if count, ok := ctx.Value(scanCountKey{}).(*int); ok && count != nil {
+		*count += n
+	}
 }

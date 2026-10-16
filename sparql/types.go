@@ -108,10 +108,10 @@ func transitiveSuperclasses(startClassIRI string, direct map[string][]string) []
 	return out
 }
 
-// EntityTypePattern formats and validates the six-part ADR-102 ScanPattern
+// entityTypePattern formats and validates the six-part ADR-102 ScanPattern
 // selector `<org>.<platform>.*.<domain>.<type>.*` for a `<domain>.<type>` key.
 // Empty org or platform arguments become `"*"` wildcards.
-func EntityTypePattern(domainType, org, platform string) (string, error) {
+func entityTypePattern(domainType, org, platform string) (string, error) {
 	domain, entityType, err := vocabulary.ParseEntityTypeKey(domainType)
 	if err != nil {
 		return "", err
@@ -145,7 +145,7 @@ func TypeScanPatternsForClass(classIRI, org, platform string) ([]string, error) 
 	}
 	patterns := make([]string, 0, len(domainTypes))
 	for _, dt := range domainTypes {
-		pat, err := EntityTypePattern(dt, org, platform)
+		pat, err := entityTypePattern(dt, org, platform)
 		if err != nil {
 			return nil, err
 		}

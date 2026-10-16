@@ -1,6 +1,7 @@
 package sparql
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strconv"
@@ -68,10 +69,10 @@ func isAbsoluteSubjectIRI(s string) bool {
 	return true
 }
 
-// ValidateTripleSerializable verifies that tr is not silently omitted by
+// validateTripleSerializable verifies that tr is not silently omitted by
 // semengine/vocabulary/export (D.2 TestProbeSerializerInvalidTripleOmissionSeam)
 // and does not emit a relative/pragmatic datatype IRI (such as ^^<float>).
-func ValidateTripleSerializable(tr message.Triple, baseIRI ...string) error {
+func validateTripleSerializable(tr message.Triple, baseIRI ...string) error {
 	if strings.TrimSpace(tr.Subject) == "" {
 		return newInvalidOutputTripleError("triple has empty subject")
 	}
@@ -106,7 +107,7 @@ func ValidateTripleSerializable(tr message.Triple, baseIRI ...string) error {
 func ValidateGraphTriples(triples []message.Triple, baseIRI ...string) error {
 	base := resolveOptionalBaseIRI(baseIRI)
 	for i := range triples {
-		if err := ValidateTripleSerializable(triples[i], base); err != nil {
+		if err := validateTripleSerializable(triples[i], base); err != nil {
 			return err
 		}
 	}
@@ -262,6 +263,15 @@ func emitProjectedChainTriples(
 			}); err != nil || stop {
 				return err
 			}
+			for _, supIRI := range SuperclassesForClassIRI(step.NodeClassIRI) {
+				if stop, err := collector.add(message.Triple{
+					Subject:   bnodeID,
+					Predicate: RDFTypeIRI,
+					Object:    supIRI,
+				}); err != nil || stop {
+					return err
+				}
+			}
 		}
 		if stepIdx == len(steps)-1 {
 			termTriple, err := propagateTerminalTriple(normSrc, canonObj, bnodeID, step.ValuePredicateIRI)
@@ -386,7 +396,7 @@ func newGraphTripleCollector(mapper *irimap.Mapper, maxResults int, allowTruncat
 
 func (c *graphTripleCollector) add(tr message.Triple) (stopped bool, err error) {
 	base := c.mapper.BaseIRI()
-	if err := ValidateTripleSerializable(tr, base); err != nil {
+	if err := validateTripleSerializable(tr, base); err != nil {
 		return false, err
 	}
 	predTerm, _, canonObj, ok, err := resolveTripleTerms(tr, base)
@@ -425,7 +435,7 @@ func (c *graphTripleCollector) add(tr message.Triple) (stopped bool, err error) 
 	return false, nil
 }
 
-func (s *execState) execConstruct(q *Query) (*Result, error) {
+func (s *execState) execConstruct(ctx context.Context, q *Query) (*Result, error) {
 	if s.maxResults <= 0 {
 		if s.allowTruncation {
 			s.markTruncated(TruncationReasonResultLimit)
@@ -440,14 +450,22 @@ func (s *execState) execConstruct(q *Query) (*Result, error) {
 		return nil, newResultLimitError(s.maxResults)
 	}
 
-	solutions, err := s.evalGroup(q.Where, []Solution{{}})
+	// Enforce MaxResults on deduplicated output triples rather than intermediate WHERE rows.
+	s.enforceSolutionLimit = false
+	solutions, err := s.evalGroup(ctx, q.Where, []Solution{{}})
 	if err != nil {
+		return nil, err
+	}
+	if err := s.checkContext(ctx); err != nil {
 		return nil, err
 	}
 
 	vars := selectVariables(q)
 	sortSolutions(solutions, q.OrderBy, vars)
 	if q.Distinct {
+		if err := s.checkContext(ctx); err != nil {
+			return nil, err
+		}
 		solutions = deduplicateSolutions(solutions, vars)
 	}
 	if q.Offset > 0 {
@@ -467,7 +485,7 @@ func (s *execState) execConstruct(q *Query) (*Result, error) {
 
 	collector := newGraphTripleCollector(s.mapper, s.maxResults, s.allowTruncation)
 	for rowIdx, sol := range solutions {
-		if err := s.checkContext(); err != nil {
+		if err := s.checkContext(ctx); err != nil {
 			return nil, err
 		}
 		stopped, err := s.instantiateConstructRow(collector, q.Construct, sol, rowIdx)
@@ -477,6 +495,9 @@ func (s *execState) execConstruct(q *Query) (*Result, error) {
 		if stopped {
 			break
 		}
+	}
+	if err := s.checkContext(ctx); err != nil {
+		return nil, err
 	}
 	if collector.truncated {
 		s.markTruncated(TruncationReasonResultLimit)
@@ -683,7 +704,7 @@ func rdfTripleToMessageTriple(subj, pred string, objTerm Term, mapper *irimap.Ma
 	return tr
 }
 
-func (s *execState) execDescribe(q *Query) (*Result, error) {
+func (s *execState) execDescribe(ctx context.Context, q *Query) (*Result, error) {
 	if s.maxResults <= 0 {
 		if s.allowTruncation {
 			s.markTruncated(TruncationReasonResultLimit)
@@ -702,13 +723,21 @@ func (s *execState) execDescribe(q *Query) (*Result, error) {
 	targetIRIs = append(targetIRIs, q.DescribeIRIs...)
 
 	if q.HasWhere {
-		solutions, err := s.evalGroup(q.Where, []Solution{{}})
+		// Enforce MaxResults on deduplicated output triples rather than intermediate WHERE rows.
+		s.enforceSolutionLimit = false
+		solutions, err := s.evalGroup(ctx, q.Where, []Solution{{}})
 		if err != nil {
+			return nil, err
+		}
+		if err := s.checkContext(ctx); err != nil {
 			return nil, err
 		}
 		vars := describeVariables(q)
 		sortSolutions(solutions, q.OrderBy, vars)
 		if q.Distinct {
+			if err := s.checkContext(ctx); err != nil {
+				return nil, err
+			}
 			solutions = deduplicateSolutions(solutions, vars)
 		}
 		if q.Offset > 0 {
@@ -751,7 +780,7 @@ func (s *execState) execDescribe(q *Query) (*Result, error) {
 		err      error
 	)
 	if len(entityIDs) > 0 {
-		entities, err = s.readEntitiesByIDs(entityIDs)
+		entities, err = s.readEntitiesByIDs(ctx, entityIDs)
 		if err != nil {
 			return nil, err
 		}
@@ -759,7 +788,7 @@ func (s *execState) execDescribe(q *Query) (*Result, error) {
 
 	collector := newGraphTripleCollector(s.mapper, s.maxResults, s.allowTruncation)
 	for i := range entities {
-		if err := s.checkContext(); err != nil {
+		if err := s.checkContext(ctx); err != nil {
 			return nil, err
 		}
 		unfolded, err := UnfoldEntity(&entities[i], s.mapper.BaseIRI())
@@ -780,6 +809,9 @@ func (s *execState) execDescribe(q *Query) (*Result, error) {
 		if stopped {
 			break
 		}
+	}
+	if err := s.checkContext(ctx); err != nil {
+		return nil, err
 	}
 	if collector.truncated {
 		s.markTruncated(TruncationReasonResultLimit)

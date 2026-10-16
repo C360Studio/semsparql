@@ -114,7 +114,10 @@ func (r *NATSRPCReader) VerifyPatternCapability(ctx context.Context) error {
 		return fmt.Errorf("%w: server accepted invalid pattern probe without error", ErrPatternCapabilityUnsupported)
 	}
 	var classified *errs.ClassifiedError
-	if !errs.IsInvalid(negErr) || !errors.As(negErr, &classified) || classified.Code != types.ErrorCodeEntityIDPatternInvalid {
+	if errs.IsTransient(negErr) || errors.Is(negErr, context.DeadlineExceeded) || errors.Is(negErr, context.Canceled) || !errors.As(negErr, &classified) {
+		return fmt.Errorf("reader: negative pattern capability probe failed: %w", negErr)
+	}
+	if !errs.IsInvalid(negErr) || classified.Code != types.ErrorCodeEntityIDPatternInvalid {
 		return fmt.Errorf("%w: negative pattern probe returned unexpected error: %w", ErrPatternCapabilityUnsupported, negErr)
 	}
 
@@ -163,10 +166,26 @@ func (r *NATSRPCReader) GetEntity(ctx context.Context, entityID string) (*graph.
 	return exact.Entity.Clone(), nil
 }
 
+const defaultBatchChunkSize = 64
+
+func isResponseTooLargeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var classified *errs.ClassifiedError
+	if errors.As(err, &classified) && classified.Code == "response_too_large" {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "response_too_large") || strings.Contains(msg, "maximum payload")
+}
+
 // GetBatch reads a set of entities by their canonical six-part entity IDs over
 // the declared batch verb. Every requested ID is validated at entry before
-// transport. Found entities are returned in deterministic sorted ID order, and
-// any absent ID is recorded explicitly in EntityBatchResponse.Missing.
+// transport. Requests are bounded into chunks and adaptively split when a
+// batch response exceeds NATS max_payload. Found entities are returned in
+// deterministic sorted ID order, and any absent ID is recorded explicitly in
+// EntityBatchResponse.Missing.
 func (r *NATSRPCReader) GetBatch(ctx context.Context, entityIDs []string) (*graph.EntityBatchResponse, error) {
 	if err := validateContext(ctx); err != nil {
 		return nil, err
@@ -184,15 +203,52 @@ func (r *NATSRPCReader) GetBatch(ctx context.Context, entityIDs []string) (*grap
 		}, nil
 	}
 
+	out := &graph.EntityBatchResponse{
+		Entities: make([]graph.EntityState, 0, len(sortedIDs)),
+	}
+	for start := 0; start < len(sortedIDs); start += defaultBatchChunkSize {
+		end := min(start+defaultBatchChunkSize, len(sortedIDs))
+		chunkResp, err := r.fetchBatchChunk(ctx, sortedIDs[start:end])
+		if err != nil {
+			return nil, err
+		}
+		out.Entities = append(out.Entities, chunkResp.Entities...)
+		out.Missing = append(out.Missing, chunkResp.Missing...)
+	}
+	return out, nil
+}
+
+func (r *NATSRPCReader) fetchBatchChunk(ctx context.Context, chunkIDs []string) (*graph.EntityBatchResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	reqBytes, err := json.Marshal(struct {
 		IDs []string `json:"ids"`
-	}{IDs: sortedIDs})
+	}{IDs: chunkIDs})
 	if err != nil {
 		return nil, fmt.Errorf("reader: marshal batch request: %w", err)
 	}
 
 	respBytes, err := r.requester.RequestClassified(ctx, r.batchSubject, reqBytes, r.timeout)
 	if err != nil {
+		if isResponseTooLargeError(err) {
+			if len(chunkIDs) > 1 {
+				mid := len(chunkIDs) / 2
+				left, err := r.fetchBatchChunk(ctx, chunkIDs[:mid])
+				if err != nil {
+					return nil, err
+				}
+				right, err := r.fetchBatchChunk(ctx, chunkIDs[mid:])
+				if err != nil {
+					return nil, err
+				}
+				return &graph.EntityBatchResponse{
+					Entities: append(left.Entities, right.Entities...),
+					Missing:  append(left.Missing, right.Missing...),
+				}, nil
+			}
+			return nil, errs.ClassifiedCode(errs.ErrorTransient, "response_too_large", err)
+		}
 		return nil, err
 	}
 
@@ -211,11 +267,18 @@ func (r *NATSRPCReader) GetBatch(ctx context.Context, entityIDs []string) (*grap
 	foundByID := make(map[string]graph.EntityState, len(wireResp.Entities))
 	for i := range wireResp.Entities {
 		ent := &wireResp.Entities[i]
-		if _, requested := slices.BinarySearch(sortedIDs, ent.ID); !requested {
+		if _, requested := slices.BinarySearch(chunkIDs, ent.ID); !requested {
 			return nil, graph.ClassifyStateContractError(&graph.StateContractError{
 				Reason:   graph.GraphStateReasonNoncanonicalEntityID,
 				EntityID: ent.ID,
 				Err:      fmt.Errorf("batch response contains unrequested entity %q", ent.ID),
+			})
+		}
+		if _, dup := foundByID[ent.ID]; dup {
+			return nil, graph.ClassifyStateContractError(&graph.StateContractError{
+				Reason:   graph.GraphStateReasonNoncanonicalEntityID,
+				EntityID: ent.ID,
+				Err:      fmt.Errorf("batch response contains duplicate entity %q", ent.ID),
 			})
 		}
 		foundByID[ent.ID] = *ent.Clone()
@@ -223,24 +286,52 @@ func (r *NATSRPCReader) GetBatch(ctx context.Context, entityIDs []string) (*grap
 
 	missingReasonByID := make(map[string]graph.MissingReason, len(wireResp.Missing))
 	for _, m := range wireResp.Missing {
-		reason := m.Reason
-		if reason == "" {
-			reason = graph.MissingNotFound
+		if _, requested := slices.BinarySearch(chunkIDs, m.ID); !requested {
+			return nil, graph.ClassifyStateContractError(&graph.StateContractError{
+				Reason:   graph.GraphStateReasonNoncanonicalEntityID,
+				EntityID: m.ID,
+				Err:      fmt.Errorf("batch response contains unrequested missing entity %q", m.ID),
+			})
 		}
-		missingReasonByID[m.ID] = reason
+		if strings.TrimSpace(string(m.Reason)) == "" {
+			return nil, graph.ClassifyStateContractError(&graph.StateContractError{
+				Reason:   graph.GraphStateReasonNoncanonicalEntityID,
+				EntityID: m.ID,
+				Err:      fmt.Errorf("batch response contains empty missing reason for %q", m.ID),
+			})
+		}
+		if _, inFound := foundByID[m.ID]; inFound {
+			return nil, graph.ClassifyStateContractError(&graph.StateContractError{
+				Reason:   graph.GraphStateReasonNoncanonicalEntityID,
+				EntityID: m.ID,
+				Err:      fmt.Errorf("batch response reports %q in both entities and missing", m.ID),
+			})
+		}
+		if _, dup := missingReasonByID[m.ID]; dup {
+			return nil, graph.ClassifyStateContractError(&graph.StateContractError{
+				Reason:   graph.GraphStateReasonNoncanonicalEntityID,
+				EntityID: m.ID,
+				Err:      fmt.Errorf("batch response contains duplicate missing entry for %q", m.ID),
+			})
+		}
+		missingReasonByID[m.ID] = m.Reason
 	}
 
 	out := &graph.EntityBatchResponse{
 		Entities: make([]graph.EntityState, 0, len(foundByID)),
 	}
-	for _, id := range sortedIDs {
+	for _, id := range chunkIDs {
 		if ent, ok := foundByID[id]; ok {
 			out.Entities = append(out.Entities, ent)
 			continue
 		}
 		reason, ok := missingReasonByID[id]
 		if !ok {
-			reason = graph.MissingNotFound
+			return nil, graph.ClassifyStateContractError(&graph.StateContractError{
+				Reason:   graph.GraphStateReasonNoncanonicalEntityID,
+				EntityID: id,
+				Err:      fmt.Errorf("batch response omitted requested entity %q from both entities and missing", id),
+			})
 		}
 		out.Missing = append(out.Missing, graph.MissingEntity{
 			ID:     id,
@@ -374,8 +465,9 @@ func (r *NATSRPCReader) scanPages(
 			}
 			if _, exists := byID[ent.ID]; !exists {
 				if len(byID)+1 > budget {
-					return nil, fmt.Errorf("%w: %s exceeded budget of %d entities", ErrScanBudgetExceeded, selectorDesc, budget)
+					return sortEntitiesByID(byID), fmt.Errorf("%w: %s exceeded budget of %d entities", ErrScanBudgetExceeded, selectorDesc, budget)
 				}
+				recordScannedEntity(ctx, 1)
 			}
 			byID[ent.ID] = *ent.Clone()
 		}
@@ -393,8 +485,12 @@ func (r *NATSRPCReader) scanPages(
 		cursor = resp.NextCursor
 	}
 
+	return sortEntitiesByID(byID), nil
+}
+
+func sortEntitiesByID(byID map[string]graph.EntityState) []graph.EntityState {
 	if len(byID) == 0 {
-		return []graph.EntityState{}, nil
+		return []graph.EntityState{}
 	}
 	ids := make([]string, 0, len(byID))
 	for id := range byID {
@@ -405,7 +501,7 @@ func (r *NATSRPCReader) scanPages(
 	for _, id := range ids {
 		out = append(out, byID[id])
 	}
-	return out, nil
+	return out
 }
 
 // EntitiesByPredicate scans the graph under budget using MatchAllPattern over
@@ -420,7 +516,7 @@ func (r *NATSRPCReader) EntitiesByPredicate(ctx context.Context, predicate strin
 	}
 	scanned, err := r.ScanPattern(ctx, MatchAllPattern, budget)
 	if err != nil {
-		return nil, err
+		return filterEntitiesByPredicate(scanned, predicate), err
 	}
 	return filterEntitiesByPredicate(scanned, predicate), nil
 }

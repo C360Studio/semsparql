@@ -327,7 +327,7 @@ func checkAdapterCommon(rel, roleName, text string) []string {
 
 type ruleSectionCount struct {
 	title string
-	rows  int
+	rows  []string
 }
 
 func checkRulesAndSizeParity(root string) []string {
@@ -355,8 +355,8 @@ func checkRulesAndSizeParity(root string) []string {
 	if len(agentsData) >= maxAgentsMDBytes {
 		out = append(out, fmt.Sprintf("AGENTS.md: %d bytes is not strictly under %d bytes", len(agentsData), maxAgentsMDBytes))
 	}
-	agentsCounts := parseRuleSectionCounts(string(agentsData), "### ")
-	indexCounts := parseRuleSectionCounts(string(indexData), "## ")
+	agentsCounts := parseRuleSectionCounts(string(agentsData), "### ", 2)
+	indexCounts := parseRuleSectionCounts(string(indexData), "## ", 1)
 	if len(agentsCounts) != len(expectedRuleDomains) || len(indexCounts) != len(expectedRuleDomains) {
 		return append(out, fmt.Sprintf("AGENTS.md (%d sections) and .agents/rules-index.md (%d sections) must both have %d numbered rule sections",
 			len(agentsCounts), len(indexCounts), len(expectedRuleDomains)))
@@ -367,15 +367,35 @@ func checkRulesAndSizeParity(root string) []string {
 			out = append(out, fmt.Sprintf("rule section %d: AGENTS.md = %q, .agents/rules-index.md = %q, want %q", i+1, a.title, b.title, wantTitle))
 			continue
 		}
-		if a.rows == 0 || a.rows != b.rows {
+		if len(a.rows) == 0 || len(a.rows) != len(b.rows) {
 			out = append(out, fmt.Sprintf("AGENTS.md and .agents/rules-index.md disagree on row count in %q: AGENTS.md has %d, .agents/rules-index.md has %d",
-				wantTitle, a.rows, b.rows))
+				wantTitle, len(a.rows), len(b.rows)))
+			continue
+		}
+		for rIdx := range a.rows {
+			if !ruleRowsShareKeyword(a.rows[rIdx], b.rows[rIdx]) {
+				out = append(out, fmt.Sprintf("AGENTS.md and .agents/rules-index.md row %d in %q do not correspond: %q vs %q",
+					rIdx+1, wantTitle, a.rows[rIdx], b.rows[rIdx]))
+			}
 		}
 	}
 	return out
 }
 
-func parseRuleSectionCounts(text, prefix string) []ruleSectionCount {
+var ruleTokenPattern = regexp.MustCompile(`[A-Za-z0-9_.-]{4,}`)
+
+func ruleRowsShareKeyword(a, b string) bool {
+	aLower := strings.ToLower(a)
+	bLower := strings.ToLower(b)
+	for _, tok := range ruleTokenPattern.FindAllString(aLower, -1) {
+		if strings.Contains(bLower, tok) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseRuleSectionCounts(text, prefix string, ruleCol int) []ruleSectionCount {
 	var sections []ruleSectionCount
 	cur := -1
 	for _, line := range strings.Split(text, "\n") {
@@ -394,7 +414,12 @@ func parseRuleSectionCounts(text, prefix string) []ruleSectionCount {
 		if strings.HasPrefix(line, "| ---") || strings.HasPrefix(line, "| Gate |") || strings.HasPrefix(line, "| Rule |") {
 			continue
 		}
-		sections[cur].rows++
+		cols := strings.Split(line, "|")
+		ruleText := line
+		if ruleCol < len(cols) {
+			ruleText = strings.TrimSpace(cols[ruleCol])
+		}
+		sections[cur].rows = append(sections[cur].rows, ruleText)
 	}
 	return sections
 }

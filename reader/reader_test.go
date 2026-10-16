@@ -49,9 +49,9 @@ func TestMemoryReaderEmptySentinelDistinction(t *testing.T) {
 		t.Fatalf("ScanPattern(MatchAllPattern) = %+v, want 2 sorted entities", all)
 	}
 
-	// MatchAllPattern still enforces the scan budget and never returns a partial prefix.
-	if partial, err := r.ScanPattern(ctx, MatchAllPattern, 1); !errors.Is(err, ErrScanBudgetExceeded) || partial != nil {
-		t.Fatalf("ScanPattern(MatchAllPattern, budget=1) = (%v, %v), want (nil, ErrScanBudgetExceeded)", partial, err)
+	// MatchAllPattern enforces the scan budget and returns ErrScanBudgetExceeded with the bounded partial slice.
+	if partial, err := r.ScanPattern(ctx, MatchAllPattern, 1); !errors.Is(err, ErrScanBudgetExceeded) || len(partial) != 1 {
+		t.Fatalf("ScanPattern(MatchAllPattern, budget=1) = (%v, %v), want (len=1, ErrScanBudgetExceeded)", partial, err)
 	}
 }
 
@@ -461,34 +461,33 @@ func TestMemoryReaderBudgetAwareScans(t *testing.T) {
 		t.Fatalf("NewMemoryReader failed: %v", err)
 	}
 
-	// ScanPrefix matches 3 entities under "c360.ops": budget=3 succeeds, budget=2 fails closed.
+	// ScanPrefix matches 3 entities under "c360.ops": budget=3 succeeds, budget=2 returns ErrScanBudgetExceeded with 2 bounded entities.
 	if got, err := r.ScanPrefix(ctx, "c360.ops", 3); err != nil || len(got) != 3 {
 		t.Fatalf("ScanPrefix(budget=3) = (%d, %v), want (3, nil)", len(got), err)
 	}
-	if got, err := r.ScanPrefix(ctx, "c360.ops", 2); !errors.Is(err, ErrScanBudgetExceeded) || got != nil {
-		t.Fatalf("ScanPrefix(budget=2) = (%v, %v), want (nil, ErrScanBudgetExceeded)", got, err)
+	if got, err := r.ScanPrefix(ctx, "c360.ops", 2); !errors.Is(err, ErrScanBudgetExceeded) || len(got) != 2 {
+		t.Fatalf("ScanPrefix(budget=2) = (len=%d, %v), want (len=2, ErrScanBudgetExceeded)", len(got), err)
 	}
-	if got, err := r.ScanPrefix(ctx, "c360.ops", 0); !errors.Is(err, ErrScanBudgetExceeded) || got != nil {
-		t.Fatalf("ScanPrefix(budget=0 on non-empty match) = (%v, %v), want (nil, ErrScanBudgetExceeded)", got, err)
+	if got, err := r.ScanPrefix(ctx, "c360.ops", 0); !errors.Is(err, ErrScanBudgetExceeded) || len(got) != 0 {
+		t.Fatalf("ScanPrefix(budget=0 on non-empty match) = (len=%d, %v), want (len=0, ErrScanBudgetExceeded)", len(got), err)
 	}
 	// Non-matching prefix reads 0 entities, so budget=0 succeeds with 0 entities.
 	if got, err := r.ScanPrefix(ctx, "other.ops", 0); err != nil || len(got) != 0 {
 		t.Fatalf("ScanPrefix(non-matching, budget=0) = (%v, %v), want ([], nil)", got, err)
 	}
 
-	// ScanPattern matches 2 entities under "c360.ops.sys1.intel.platform.*": budget=2 succeeds, budget=1 fails closed.
+	// ScanPattern matches 2 entities under "c360.ops.sys1.intel.platform.*": budget=2 succeeds, budget=1 returns ErrScanBudgetExceeded with 1 bounded entity.
 	if got, err := r.ScanPattern(ctx, "c360.ops.sys1.intel.platform.*", 2); err != nil || len(got) != 2 {
 		t.Fatalf("ScanPattern(budget=2) = (%d, %v), want (2, nil)", len(got), err)
 	}
-	if got, err := r.ScanPattern(ctx, "c360.ops.sys1.intel.platform.*", 1); !errors.Is(err, ErrScanBudgetExceeded) || got != nil {
-		t.Fatalf("ScanPattern(budget=1) = (%v, %v), want (nil, ErrScanBudgetExceeded)", got, err)
+	if got, err := r.ScanPattern(ctx, "c360.ops.sys1.intel.platform.*", 1); !errors.Is(err, ErrScanBudgetExceeded) || len(got) != 1 {
+		t.Fatalf("ScanPattern(budget=1) = (len=%d, %v), want (len=1, ErrScanBudgetExceeded)", len(got), err)
 	}
 
 	// EntitiesByPredicate("intel.role.assigned") returns 1 entity, but must scan all 3 entities
-	// in the store. A budget of 2 must fail closed with ErrScanBudgetExceeded rather than returning
-	// a partial scan result!
-	if got, err := r.EntitiesByPredicate(ctx, "intel.role.assigned", 2); !errors.Is(err, ErrScanBudgetExceeded) || got != nil {
-		t.Fatalf("EntitiesByPredicate(budget=2 for 3-entity store) = (%v, %v), want (nil, ErrScanBudgetExceeded)", got, err)
+	// in the store. A budget of 2 must return ErrScanBudgetExceeded rather than nil error!
+	if got, err := r.EntitiesByPredicate(ctx, "intel.role.assigned", 2); !errors.Is(err, ErrScanBudgetExceeded) || len(got) != 1 {
+		t.Fatalf("EntitiesByPredicate(budget=2 for 3-entity store) = (len=%d, %v), want (len=1, ErrScanBudgetExceeded)", len(got), err)
 	}
 	if got, err := r.EntitiesByPredicate(ctx, "intel.role.assigned", 3); err != nil || len(got) != 1 || got[0].ID != "c360.ops.sys1.intel.platform.uav1" {
 		t.Fatalf("EntitiesByPredicate(budget=3) = (%+v, %v), want [uav1]", got, err)

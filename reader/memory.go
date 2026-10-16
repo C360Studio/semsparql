@@ -123,8 +123,9 @@ func (r *MemoryReader) ScanPrefix(ctx context.Context, prefix string, budget int
 			continue
 		}
 		if len(out)+1 > budget {
-			return nil, fmt.Errorf("%w: prefix %q exceeded budget of %d entities", ErrScanBudgetExceeded, prefix, budget)
+			return out, fmt.Errorf("%w: prefix %q exceeded budget of %d entities", ErrScanBudgetExceeded, prefix, budget)
 		}
+		recordScannedEntity(ctx, 1)
 		out = append(out, *r.entities[id].Clone())
 	}
 	return out, nil
@@ -159,8 +160,9 @@ func (r *MemoryReader) ScanPattern(ctx context.Context, pattern string, budget i
 			continue
 		}
 		if len(out)+1 > budget {
-			return nil, fmt.Errorf("%w: pattern %q exceeded budget of %d entities", ErrScanBudgetExceeded, pattern, budget)
+			return out, fmt.Errorf("%w: pattern %q exceeded budget of %d entities", ErrScanBudgetExceeded, pattern, budget)
 		}
+		recordScannedEntity(ctx, 1)
 		out = append(out, *r.entities[id].Clone())
 	}
 	return out, nil
@@ -178,7 +180,7 @@ func (r *MemoryReader) EntitiesByPredicate(ctx context.Context, predicate string
 	}
 	scanned, err := r.ScanPattern(ctx, MatchAllPattern, budget)
 	if err != nil {
-		return nil, err
+		return filterEntitiesByPredicate(scanned, predicate), err
 	}
 	return filterEntitiesByPredicate(scanned, predicate), nil
 }

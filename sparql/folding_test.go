@@ -100,14 +100,7 @@ func materializeUnfoldedGraph(t testing.TB, entities []graph.EntityState, mapper
 				}
 			}
 
-			canonObj, err := irimap.CanonicalNTriplesObject(tr, baseIRI)
-			if err != nil {
-				t.Fatalf("CanonicalNTriplesObject(%+v): %v", tr, err)
-			}
-			objTerm, err := parseNTriplesObjectTerm(canonObj)
-			if err != nil {
-				t.Fatalf("parseNTriplesObjectTerm(%q): %v", canonObj, err)
-			}
+			predTerm, objTerm, canonObj := oracleTripleTerms(t, tr, baseIRI)
 
 			meta := vocabulary.GetPredicateMetadata(tr.Predicate)
 			if meta != nil && meta.Projection != nil && len(meta.Projection.Steps) > 0 && subjTerm.Kind == TermIRI {
@@ -149,10 +142,6 @@ func materializeUnfoldedGraph(t testing.TB, entities []graph.EntityState, mapper
 				continue
 			}
 
-			predTerm, _, _, ok, err := resolveTripleTerms(tr, baseIRI)
-			if err != nil || !ok {
-				t.Fatalf("resolveTripleTerms(%+v): ok=%v err=%v", tr, ok, err)
-			}
 			add(rdfTriple{
 				Subject:   subjTerm,
 				Predicate: predTerm,
@@ -172,9 +161,22 @@ func materializeUnfoldedGraph(t testing.TB, entities []graph.EntityState, mapper
 	return triples
 }
 
+func oracleTripleTerms(t testing.TB, tr message.Triple, baseIRI string) (predTerm, objTerm Term, canonObj string) {
+	t.Helper()
+	predIRI, canon, err := irimap.CanonicalNTriplesPredicateAndObject(tr, baseIRI)
+	if err != nil {
+		t.Fatalf("CanonicalNTriplesPredicateAndObject(%+v): %v", tr, err)
+	}
+	obj, err := parseTestNTriplesObject(canon)
+	if err != nil {
+		t.Fatalf("parseTestNTriplesObject(%q): %v", canon, err)
+	}
+	return Term{Kind: TermIRI, Value: predIRI}, obj, canon
+}
+
 // evalOverMaterializedOracle evaluates a parsed SELECT/ASK query directly over
 // a pre-materialized unfolded RDF triple set without using FoldProjections,
-// PlanBGP, or GraphReader.
+// planBGP, or GraphReader.
 func evalOverMaterializedOracle(t testing.TB, q *Query, graphTriples []rdfTriple) *Result {
 	t.Helper()
 	solutions := evalGroupOracle(q.Where, []Solution{{}}, graphTriples)
@@ -241,7 +243,8 @@ func evalGroupOracle(g GroupPattern, current []Solution, graphTriples []rdfTripl
 				solutions = next
 			}
 		case SubGroupPattern:
-			solutions = evalGroupOracle(p.Group, solutions, graphTriples)
+			inner := evalGroupOracle(p.Group, []Solution{{}}, graphTriples)
+			solutions = joinSolutionsOracle(solutions, inner)
 		case OptionalPattern:
 			var out []Solution
 			for _, sol := range solutions {
@@ -254,15 +257,11 @@ func evalGroupOracle(g GroupPattern, current []Solution, graphTriples []rdfTripl
 			}
 			solutions = out
 		case UnionPattern:
-			var out []Solution
+			var unioned []Solution
 			for _, b := range p.Branches {
-				seed := make([]Solution, len(solutions))
-				for i := range solutions {
-					seed[i] = solutions[i].Clone()
-				}
-				out = append(out, evalGroupOracle(b, seed, graphTriples)...)
+				unioned = append(unioned, evalGroupOracle(b, []Solution{{}}, graphTriples)...)
 			}
-			solutions = out
+			solutions = joinSolutionsOracle(solutions, unioned)
 		}
 	}
 	if len(g.Filters) == 0 || len(solutions) == 0 {
@@ -275,6 +274,18 @@ func evalGroupOracle(g GroupPattern, current []Solution, graphTriples []rdfTripl
 		}
 	}
 	return filtered
+}
+
+func joinSolutionsOracle(left, right []Solution) []Solution {
+	var out []Solution
+	for _, l := range left {
+		for _, r := range right {
+			if merged, ok := mergeCompatibleSolutions(l, r); ok {
+				out = append(out, merged)
+			}
+		}
+	}
+	return out
 }
 
 func assertSolutionsEqual(t fatalfT, got, want *Result, contextMsg string) {
@@ -391,9 +402,9 @@ func TestBGPFoldingCollapsesDIEKMChains(t *testing.T) {
 			if !slices.Equal(folded.Chains[0].Predicates, []string{"intel.role.assigned"}) {
 				t.Fatalf("FoldedChain.Predicates = %v, want [intel.role.assigned]", folded.Chains[0].Predicates)
 			}
-			plan := PlanBGP(bgp, mapper)
-			if len(plan.Steps) != 1 || plan.Steps[0].Folded == nil || plan.Steps[0].Kind != AccessPredicate {
-				t.Fatalf("PlanBGP steps = %+v, want 1 folded AccessPredicate step", plan.Steps)
+			plan := planBGP(bgp, mapper)
+			if len(plan.Steps) != 1 || plan.Steps[0].Folded == nil || plan.Steps[0].Kind != accessPredicate {
+				t.Fatalf("planBGP steps = %+v, want 1 folded accessPredicate step", plan.Steps)
 			}
 
 			rec.reset()
@@ -774,9 +785,9 @@ func TestBGPFoldingCollapsesDIEKMChains(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Parse exact chain: %v", err)
 		}
-		planExact := PlanBGP(qExact.Where.Elements[0].(BGPPattern), mapper)
-		if len(planExact.Steps) != 1 || planExact.Steps[0].Kind != AccessExactEntity || planExact.Steps[0].EntityID != idAlpha {
-			t.Fatalf("PlanBGP exact chain = %+v, want 1 AccessExactEntity step for %s", planExact.Steps, idAlpha)
+		planExact := planBGP(qExact.Where.Elements[0].(BGPPattern), mapper)
+		if len(planExact.Steps) != 1 || planExact.Steps[0].Kind != accessExactEntity || planExact.Steps[0].EntityID != idAlpha {
+			t.Fatalf("planBGP exact chain = %+v, want 1 accessExactEntity step for %s", planExact.Steps, idAlpha)
 		}
 		gotExact, err := exec.Execute(context.Background(), qExact)
 		if err != nil {
@@ -786,7 +797,7 @@ func TestBGPFoldingCollapsesDIEKMChains(t *testing.T) {
 			t.Fatalf("expected 2 altitudes for alpha, got %d", len(gotExact.Solutions))
 		}
 
-		// 2. Joined `?platform a diekm:IntelligencePlatform` + folded chain orders AccessTypePattern before bound-subject FoldedChain.
+		// 2. Joined `?platform a diekm:IntelligencePlatform` + folded chain orders accessTypePattern before bound-subject FoldedChain.
 		qJoined, err := Parse(`
 			PREFIX obo: <http://purl.obolibrary.org/obo/>
 			PREFIX cco: <https://www.commoncoreontologies.org/>
@@ -806,11 +817,11 @@ func TestBGPFoldingCollapsesDIEKMChains(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Parse joined type + chain: %v", err)
 		}
-		planJoined := PlanBGPWithScope(qJoined.Where.Elements[0].(BGPPattern), mapper, "c360", "ops")
-		if len(planJoined.Steps) != 2 || planJoined.Steps[0].Kind != AccessTypePattern || planJoined.Steps[1].Folded == nil {
-			t.Fatalf("PlanBGPWithScope joined = %+v, want AccessTypePattern followed by FoldedChain", planJoined.Steps)
+		planJoined := planBGPWithScope(qJoined.Where.Elements[0].(BGPPattern), mapper, "c360", "ops")
+		if len(planJoined.Steps) != 2 || planJoined.Steps[0].Kind != accessTypePattern || planJoined.Steps[1].Folded == nil {
+			t.Fatalf("planBGPWithScope joined = %+v, want accessTypePattern followed by FoldedChain", planJoined.Steps)
 		}
-		gotJoined, err := exec.Execute(context.Background(), qJoined, WithOrgPlatform("c360", "ops"))
+		gotJoined, err := exec.Execute(context.Background(), qJoined, withOrgPlatform("c360", "ops"))
 		if err != nil {
 			t.Fatalf("Execute joined type + chain: %v", err)
 		}
