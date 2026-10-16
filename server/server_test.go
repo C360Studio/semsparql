@@ -22,6 +22,7 @@ import (
 
 	"github.com/c360studio/semengine/graph"
 	"github.com/c360studio/semengine/message"
+	"github.com/c360studio/semengine/pkg/errs"
 	"github.com/c360studio/semengine/vocabulary"
 	"github.com/c360studio/semsparql/irimap"
 	"github.com/c360studio/semsparql/reader"
@@ -1402,6 +1403,108 @@ func TestEntityJSONLDAndExportRoutes(t *testing.T) {
 			t.Fatal("WriteGraphResult(FormatSPARQLJSON) = nil, want error")
 		}
 	})
+
+	t.Run("Classified transient and fatal reader errors map to 503 and 500 with class and detail preserved", func(t *testing.T) {
+		transientErr := &errs.ClassifiedError{
+			Class:     errs.ErrorTransient,
+			Err:       errors.New("kv store unavailable"),
+			Component: "graph-ingest",
+			Operation: "handleQueryPrefix",
+			Message:   "kv bucket busy",
+			Code:      "kv_transient",
+			Detail:    map[string]any{"bucket": "ENTITY_STATES"},
+		}
+		fatalErr := &errs.ClassifiedError{
+			Class:     errs.ErrorFatal,
+			Err:       errors.New("incompatible server"),
+			Component: "NATSRPCReader",
+			Operation: "ScanPattern",
+			Message:   "server ignored pattern",
+			Code:      "pattern_capability_unsupported",
+		}
+
+		for _, tc := range []struct {
+			name       string
+			readerErr  error
+			wantStatus int
+			wantCode   string
+			wantClass  string
+		}{
+			{
+				name:       "classified transient",
+				readerErr:  transientErr,
+				wantStatus: http.StatusServiceUnavailable,
+				wantCode:   "kv_transient",
+				wantClass:  errs.ErrorTransient.String(),
+			},
+			{
+				name:       "classified fatal",
+				readerErr:  fatalErr,
+				wantStatus: http.StatusInternalServerError,
+				wantCode:   "pattern_capability_unsupported",
+				wantClass:  errs.ErrorFatal.String(),
+			},
+		} {
+			errReader := &errorInjectingReader{base: mr, scanErr: tc.readerErr}
+			errSrv, err := New(errReader, Config{BaseIRI: testBaseIRI})
+			if err != nil {
+				t.Fatalf("%s New: %v", tc.name, err)
+			}
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/sparql?query="+url.QueryEscape("SELECT ?s WHERE { ?s ?p ?o }"), nil)
+			errSrv.Handler().ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("%s status = %d, want %d (%s)", tc.name, rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			var payload errorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("%s json.Unmarshal: %v", tc.name, err)
+			}
+			if payload.Error != tc.wantCode || payload.Class != tc.wantClass {
+				t.Fatalf("%s payload = %+v, want error=%q class=%q", tc.name, payload, tc.wantCode, tc.wantClass)
+			}
+		}
+	})
+}
+
+type errorInjectingReader struct {
+	base    reader.GraphReader
+	scanErr error
+}
+
+func (r *errorInjectingReader) GetEntity(ctx context.Context, id string) (*graph.EntityState, error) {
+	if r.scanErr != nil {
+		return nil, r.scanErr
+	}
+	return r.base.GetEntity(ctx, id)
+}
+
+func (r *errorInjectingReader) GetBatch(ctx context.Context, ids []string) (*graph.EntityBatchResponse, error) {
+	if r.scanErr != nil {
+		return nil, r.scanErr
+	}
+	return r.base.GetBatch(ctx, ids)
+}
+
+func (r *errorInjectingReader) ScanPrefix(ctx context.Context, prefix string, budget int) ([]graph.EntityState, error) {
+	if r.scanErr != nil {
+		return nil, r.scanErr
+	}
+	return r.base.ScanPrefix(ctx, prefix, budget)
+}
+
+func (r *errorInjectingReader) ScanPattern(ctx context.Context, pattern string, budget int) ([]graph.EntityState, error) {
+	if r.scanErr != nil {
+		return nil, r.scanErr
+	}
+	return r.base.ScanPattern(ctx, pattern, budget)
+}
+
+func (r *errorInjectingReader) EntitiesByPredicate(ctx context.Context, predicate string, budget int) ([]graph.EntityState, error) {
+	if r.scanErr != nil {
+		return nil, r.scanErr
+	}
+	return r.base.EntitiesByPredicate(ctx, predicate, budget)
 }
 
 func FuzzExportHTTPRequest(f *testing.F) {

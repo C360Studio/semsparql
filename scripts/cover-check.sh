@@ -23,6 +23,7 @@ default_targets=(
   "reader unit"
   "sparql unit"
   "server unit"
+  "cmd/semsparql unit"
 )
 if [ -n "${COVER_TARGETS:-}" ]; then
   targets=()

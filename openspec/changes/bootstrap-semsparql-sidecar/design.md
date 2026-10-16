@@ -30,8 +30,11 @@ structural guards), task 0.2, task 1.1 (`irimap`), task 1.2 (`reader.GraphReader
 `GET`/`POST /sparql`, `SELECT`/`ASK` result negotiation and serialization, bounded input/query budgets, and
 localhost/auth bind defaults), task 3.1 (`sparql` virtual `rdf:type` and `rdfs:subClassOf*` resolution, standalone
 registered-class closure evaluation, explicit/virtual graph-set merging, and startup `ValidateSuperclassClosure` checked
-by `server.New`), and task 3.2 (`sparql` complete-chain `ProjectionSpec` folding and equivalent virtual-unfolded
-fallback evaluation) are complete; each remaining issue task is a reviewable implementation PR. Phase 5 is
+by `server.New`), task 3.2 (`sparql` complete-chain `ProjectionSpec` folding and equivalent virtual-unfolded
+fallback evaluation), task 3.3 (`sparql` `CONSTRUCT`/`DESCRIBE`, `UnfoldEntity`, terminal datatype propagation, and
+loud invalid-triple validation; `server` `GET /entities/{entity_id}.jsonld` and `POST /export`; `docs/architecture.md`
+and `docs/shacl-compliance-gate.md`), and task 4.1 (`reader.NATSRPCReader` and `cmd/semsparql`) are complete; remaining
+task `4.2` is the dedicated `-tags=integration` DIEKM end-to-end suite. Phase 5 is
 optional and separately decided, never an implicit prerequisite for the initial sidecar.
 
 ## Options considered
@@ -59,16 +62,18 @@ optional and separately decided, never an implicit prerequisite for the initial 
 | `cmd/semsparql` | Dependency registration, NATS/HTTP composition and lifecycle | Service operators; safe startup requirement |
 
 `irimap` (`Mapper`, `CanonicalNTriplesObject`, `BlankNodeID`), `reader` (`GraphReader`, `MemoryReader`,
-`MatchAllPattern`, `ErrNilContext`, `ErrEntityNotFound`, `ErrScanBudgetExceeded`), `sparql` AST/parser, virtual
-`rdf:type`/`rdfs:subClassOf*` resolution, complete-chain `ProjectionSpec` folding and virtual-unfolded fallback, and
-`SELECT`/`ASK` planner/executor (`Parse`, `Query`, `FoldProjections`, `FoldedBGP`, `FoldedChain`,
-`ProjectionPredicatesForStepIRI`, `ProjectionPredicatesForNodeClass`, `AllProjectedPredicates`, `PlanBGP`,
+`NATSRPCReader`, `ClassifiedRequester`, `MatchAllPattern`, `ErrNilContext`, `ErrEntityNotFound`,
+`ErrScanBudgetExceeded`, `ErrPatternCapabilityUnsupported`), `sparql` AST/parser, virtual `rdf:type`/`rdfs:subClassOf*`
+resolution, complete-chain `ProjectionSpec` folding and virtual-unfolded fallback, `UnfoldEntity`, `ValidateGraphTriples`,
+and `SELECT`/`ASK`/`CONSTRUCT`/`DESCRIBE` planner/executor (`Parse`, `Query`, `FoldProjections`, `FoldedBGP`,
+`FoldedChain`, `ProjectionPredicatesForStepIRI`, `ProjectionPredicatesForNodeClass`, `AllProjectedPredicates`, `PlanBGP`,
 `PlanBGPWithScope`, `LookupPredicateCandidates`, `Executor`, `ValidateSuperclassClosure`, `TypeScanPatternsForClass`,
 `VirtualTypeIRIsForEntityID`, `SuperclassesForClassIRI`, `SubClassClosurePairs`, `ErrSyntax`, `ErrUnsupportedFeature`,
-`ErrResultLimitExceeded`, `ErrScanBudgetExceeded`, `ErrQueryTimeout`, `ErrIncompleteSuperclassClosure`), and `server`
-`/sparql` `SELECT`/`ASK` MVP (`Server`, `Config`, `ValidateConfig`, `NegotiateAccept`, `WriteSelectAskResult`,
-`ErrNotAcceptable`, `ErrUnsafeExposure`, `ErrQueryTooLarge`) are implemented in tasks 1.1–3.2; the remaining rows are
-proposed surfaces from issue #1. There is no additional public API for hypothetical users.
+`ErrResultLimitExceeded`, `ErrScanBudgetExceeded`, `ErrQueryTimeout`, `ErrIncompleteSuperclassClosure`,
+`ErrInvalidOutputTriple`), `server` (`/sparql`, `/entities/{entity_id}.jsonld`, `/export`, `Server`, `Config`,
+`ValidateConfig`, `NegotiateAccept`, `WriteSelectAskResult`, `WriteGraphResult`, `ErrNotAcceptable`,
+`ErrUnsafeExposure`, `ErrQueryTooLarge`, `ErrExportBodyTooLarge`), and `cmd/semsparql` are implemented in tasks
+1.1–4.1. There is no additional public API for hypothetical users.
 
 ## Read-only query execution
 

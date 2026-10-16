@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/c360studio/semengine/message"
+	"github.com/c360studio/semengine/natsclient"
 	"github.com/c360studio/semengine/pkg/errs"
 	semtypes "github.com/c360studio/semengine/pkg/types"
 	"github.com/c360studio/semengine/vocabulary/export"
@@ -183,9 +184,14 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	s.httpSrv = httpSrv
 	s.mu.Unlock()
 
+	serveLn := ln
+	if s.cfg.TLSConfig != nil && (len(s.cfg.TLSConfig.Certificates) > 0 || s.cfg.TLSConfig.GetCertificate != nil) {
+		serveLn = tls.NewListener(ln, s.cfg.TLSConfig)
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
-		err := httpSrv.Serve(ln)
+		err := httpSrv.Serve(serveLn)
 		if errors.Is(err, http.ErrServerClosed) {
 			err = nil
 		}
@@ -196,7 +202,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithCancel(context.Background())
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		_ = httpSrv.Shutdown(shutdownCtx)
 		return <-errCh
@@ -728,17 +734,21 @@ func validateQueryValues(values url.Values, maxBytes int) (string, int, string, 
 func (s *Server) writeExecutionError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, sparql.ErrResultLimitExceeded):
-		writeJSONError(w, http.StatusUnprocessableEntity, sparql.ErrorCodeResultLimitExceeded, err.Error())
+		writeClassifiedJSONError(w, http.StatusUnprocessableEntity, sparql.ErrorCodeResultLimitExceeded, err)
 	case errors.Is(err, sparql.ErrScanBudgetExceeded):
-		writeJSONError(w, http.StatusUnprocessableEntity, sparql.ErrorCodeScanBudgetExceeded, err.Error())
+		writeClassifiedJSONError(w, http.StatusUnprocessableEntity, sparql.ErrorCodeScanBudgetExceeded, err)
 	case errors.Is(err, sparql.ErrQueryTimeout), errors.Is(err, context.DeadlineExceeded):
-		writeJSONError(w, http.StatusGatewayTimeout, sparql.ErrorCodeQueryTimeout, err.Error())
+		writeClassifiedJSONError(w, http.StatusGatewayTimeout, sparql.ErrorCodeQueryTimeout, err)
 	case errors.Is(err, context.Canceled):
-		writeJSONError(w, http.StatusGatewayTimeout, "request_canceled", err.Error())
+		writeClassifiedJSONError(w, http.StatusGatewayTimeout, "request_canceled", err)
 	case errors.Is(err, sparql.ErrInvalidOutputTriple):
-		writeJSONError(w, http.StatusInternalServerError, sparql.ErrorCodeInvalidOutputTriple, err.Error())
+		writeClassifiedJSONError(w, http.StatusInternalServerError, sparql.ErrorCodeInvalidOutputTriple, err)
+	case errs.IsFatal(err):
+		writeClassifiedJSONError(w, http.StatusInternalServerError, classifyErrorCode(err, "internal_error"), err)
+	case errs.IsTransient(err), natsclient.IsNoResponders(err):
+		writeClassifiedJSONError(w, http.StatusServiceUnavailable, classifyErrorCode(err, "upstream_unavailable"), err)
 	default:
-		writeJSONError(w, http.StatusBadRequest, classifyErrorCode(err, "query_execution_error"), err.Error())
+		writeClassifiedJSONError(w, http.StatusBadRequest, classifyErrorCode(err, "query_execution_error"), err)
 	}
 }
 
@@ -751,8 +761,10 @@ func classifyErrorCode(err error, fallback string) string {
 }
 
 type errorResponse struct {
-	Error   string `json:"error"`
-	Message string `json:"message"`
+	Error   string         `json:"error"`
+	Class   string         `json:"class,omitempty"`
+	Message string         `json:"message"`
+	Detail  map[string]any `json:"detail,omitempty"`
 }
 
 func writeJSONError(w http.ResponseWriter, status int, code, msg string) {
@@ -762,4 +774,21 @@ func writeJSONError(w http.ResponseWriter, status int, code, msg string) {
 		Error:   code,
 		Message: msg,
 	})
+}
+
+func writeClassifiedJSONError(w http.ResponseWriter, status int, code string, err error) {
+	resp := errorResponse{
+		Error:   code,
+		Message: err.Error(),
+	}
+	var ce *errs.ClassifiedError
+	if errors.As(err, &ce) {
+		resp.Class = ce.Class.String()
+		if len(ce.Detail) > 0 {
+			resp.Detail = ce.Detail
+		}
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(resp)
 }

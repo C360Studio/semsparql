@@ -1,9 +1,11 @@
 # Testing in SemSparql
 
 This page is for a developer about to write or review a test here. It covers what the test has to tell apart, which
-level to run it at, how to show it can fail, and what to record in the pull request. Task 0.1 added `go.mod`, the Go
-verification gates, and `internal/harness/contract` structural guards; product runtime packages (`irimap`, `reader`,
-`sparql`, `server`, `cmd/semsparql`) and the live NATS integration fixture arrive in tasks 1.1–4.2.
+level to run it at, how to show it can fail, and what to record in the pull request. Tasks 0.1–4.1 added `go.mod`, the
+Go verification gates, `internal/harness/contract` structural guards, and all runtime packages (`irimap`, `reader`,
+`sparql`, `server`, `cmd/semsparql`, including `TestScanPatternReaderParity` and `TestRunEndToEndWithLiveNATSAndGraphIngest`
+against an embedded JetStream NATS server and `graph-ingest`); the dedicated `-tags=integration` DIEKM end-to-end suite
+lands in task 4.2.
 
 ## Start with the wrong behavior
 
@@ -42,9 +44,9 @@ being protected.
 
 | Level | Command | What it can show |
 |---|---|---|
-| Unit | `task test:unit` | One function or in-process behavior, including the server over `MemoryReader`. Runs with `-race`; no Docker, no network. |
+| Unit | `task test:unit` | One function or in-process behavior, including `server` over `MemoryReader` and `NATSRPCReader` / `cmd/semsparql` over an in-process `nats-server/v2` + `graph-ingest`. Runs with `-race`. |
 | Unit, repeated | `task test:repeat` | A test that depends on run order, on state left by another test, or on timing. Unit tests run several times, shuffled. |
-| Integration | `task test:integration` | Behavior that depends on a real NATS server and a real graph-ingest answering the query verbs (fixture lands in task 4.2). |
+| Integration | `task test:integration` | Behavior that runs under `-tags=integration` (full DIEKM end-to-end suite lands in task 4.2). |
 | Structural guards | `task verify` | Repository-wide rules checked by `internal/harness/contract` tests and scripts (`scripts/lint-test-ports.sh`, `scripts/cleanup-roots-check.sh`). |
 
 ### Unit tests
@@ -59,11 +61,10 @@ go test -race -count=1 -run '^TestBlankNodeID' ./irimap/
 ### Integration tests
 
 Integration tests live in `*_integration_test.go` files that start with `//go:build integration`, so `go test`
-without the tag does not build them. They need a real NATS server with JetStream and a graph-ingest fixture that
-serves `graph.ingest.query.{entity,batch,prefix}`, so `NATSRPCReader` can be checked against what `MemoryReader`
-returns for the same graph. That fixture arrives with task 4.2 and is not built yet. SemEngine's `natsfixture` lives
-under its `internal/` and cannot be imported, so semsparql will need its own. Until it exists, write no test that
-pretends to cover the NATS path with a fake.
+without the tag does not build them. Real-broker NATS and `graph-ingest` parity tests (`TestScanPatternReaderParity` in
+`reader/nats_test.go` and `TestRunEndToEndWithLiveNATSAndGraphIngest` in `cmd/semsparql/main_test.go`) start an
+in-process `nats-server/v2` with JetStream on an ephemeral port (`127.0.0.1:-1`) and wire a real
+`graphingest.CreateGraphIngest` component; the dedicated `-tags=integration` DIEKM end-to-end suite lands in task 4.2.
 
 ### Structural guards
 

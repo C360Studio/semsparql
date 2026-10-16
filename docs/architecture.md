@@ -7,21 +7,23 @@ RDF graph. SemSparql sits at the export edge: it translates incoming SPARQL 1.1 
 projects stored entities into standard RDF triples on demand, and serializes results using SemEngine's own exporter. It
 never writes to the graph.
 
-As of Task 3.3, the in-memory and HTTP packages (`irimap`, `reader.GraphReader`, `reader.MemoryReader`, `sparql`, and
-`server`) are present in the tree. The live NATS RPC adapter (`reader.NATSRPCReader`) and the standalone binary
-entrypoint (`cmd/semsparql`) are scheduled for Task 4.1 and are not present in the tree yet.
+As of Task 4.1, all five runtime packages and the standalone binary (`irimap`, `reader.GraphReader`,
+`reader.MemoryReader`, `reader.NATSRPCReader`, `sparql`, `server`, and `cmd/semsparql`) are present in the tree. The
+dedicated `-tags=integration` DIEKM end-to-end test suite lands in Task 4.2.
 
 ## Package boundaries and data flow
 
-SemSparql splits query and export execution across four implemented packages so that identity rules, storage access,
-SPARQL evaluation, and HTTP transport remain testable in isolation.
+SemSparql splits query and export execution across four library packages plus the CLI entrypoint so that identity rules,
+storage access, SPARQL evaluation, HTTP transport, and process wiring remain testable in isolation.
 
 ```mermaid
 flowchart LR
-    Client["HTTP Client (SPARQL / JSON-LD / Export)"] --> Server["server (HTTP + Content Negotiation)"]
+    CLI["cmd/semsparql (Flags, Packs, NATS + HTTP Lifecycle)"] --> Server["server (HTTP + Content Negotiation)"]
+    Client["HTTP Client (SPARQL / JSON-LD / Export)"] --> Server
     Server --> Executor["sparql (Parser, Planner, Fold/Unfold, Executor)"]
     Executor --> Mapper["irimap (Entity IRI <-> Entity ID + BlankNodeID)"]
-    Executor --> Reader["reader.GraphReader (MemoryReader today; NATSRPCReader in Task 4.1)"]
+    Executor --> Reader["reader.GraphReader (MemoryReader + NATSRPCReader)"]
+    Reader --> Ingest["semengine graph.ingest.query.{entity,batch,prefix}"]
     Executor --> Vocab["semengine/vocabulary + semvocab packs"]
     Server --> Export["semengine/vocabulary/export (Turtle, N-Triples, JSON-LD)"]
 ```
@@ -31,14 +33,18 @@ flowchart LR
   deterministic blank-node identifiers (`BlankNodeID`).
 - **[`reader`](../reader/reader.go)** defines `GraphReader`, the narrow read-only interface over entity states.
   `MemoryReader` ([`reader/memory.go`](../reader/memory.go)) serves deterministic in-memory snapshots for unit tests and
-  embedded callers. `NATSRPCReader` (Task 4.1, not yet present) will implement the same interface over SemEngine's
-  `graph.ingest.query.*` NATS request-reply endpoints.
+  embedded callers. `NATSRPCReader` ([`reader/nats.go`](../reader/nats.go)) implements the same interface over
+  SemEngine's declared `graph.QueryVerbs()` (`entity`, `batch`, and `prefix`) using classified NATS RPC
+  (`RequestClassified`), opaque cursor pagination, and startup `VerifyPatternCapability`.
 - **[`sparql`](../sparql/executor.go)** parses the supported SPARQL 1.1 read-only query subset, plans constrained entity
   reads, folds complete ontology reification chains, falls back to virtual graph unfolding when a query inspects partial
   chains, and evaluates `SELECT`, `ASK`, `CONSTRUCT`, and `DESCRIBE`.
 - **[`server`](../server/server.go)** serves `GET /sparql`, `POST /sparql`, `GET /entities/{entity_id}.jsonld`, and
   `POST /export`, enforces input byte limits and execution budgets, and delegates all RDF graph serialization to
   `semengine/vocabulary/export`.
+- **[`cmd/semsparql`](../cmd/semsparql/main.go)** parses operator flags, validates non-local bind authentication,
+  registers the built-in BFO/CCO Core and DIEKM vocabulary packs, verifies superclass closure and server pattern
+  capability before accepting traffic, and manages bounded NATS and HTTP shutdown.
 
 ## Identity and blank-node mapping (`irimap`)
 
@@ -65,15 +71,16 @@ node deterministically from the source triple and zero-based step index:
 "_:b_" + hex(sha256(entityID + "\x00" + dottedPredicate + "\x00" + canonicalNTriplesObject + "\x00" + strconv.Itoa(stepIdx))[:16])
 ```
 
-`irimap.CanonicalObjectToken` obtains `canonicalNTriplesObject` by serializing a single probe triple through
+`irimap.CanonicalNTriplesObject` obtains `canonicalNTriplesObject` by serializing a single probe triple through
 `export.SerializeToString(..., export.NTriples)` (verified at `semengine v0.1.0-alpha.2` by
-`TestBlankNodeIDDeterminismAndSensitivity` in [`irimap/mapper_test.go`](../irimap/mapper_test.go)). Because the hash
+`TestProbeCanonicalNTriplesObjectSeam` in [`internal/harness/contract/probes_test.go`](../internal/harness/contract/probes_test.go)
+and `TestBlankNodeIDMultiValued` in [`irimap/mapper_test.go`](../irimap/mapper_test.go)). Because the hash
 input uses the exporter's own N-Triples object token, `float64(1500.5)` and `1500.5` produce the same blank node across
 `SELECT`, `CONSTRUCT`, `DESCRIBE`, `GET /entities/{entity_id}.jsonld`, and `POST /export`.
 
 ## Constrained storage access (`reader`)
 
-[`reader.GraphReader`](../reader/reader.go) exposes four read-only operations:
+[`reader.GraphReader`](../reader/reader.go) exposes five read-only operations:
 
 1. `GetEntity(ctx, id)` fetches one entity by its exact six-part ID.
 2. `GetBatch(ctx, ids)` fetches a sorted, deduplicated batch of exact six-part IDs.
@@ -82,12 +89,17 @@ input uses the exporter's own N-Triples object token, `float64(1500.5)` and `150
    or `*.*.*.*.*.*`).
 5. `EntitiesByPredicate(ctx, predicate, limit)` returns entities carrying a specific dotted predicate.
 
-Every selector is validated before execution using SemEngine's shared validators (`message.ValidateEntityID`,
-`semtypes.ValidateEntityIDPrefix`, and `semtypes.ValidateEntityIDPattern`, verified at `semengine v0.1.0-alpha.2` by
-`TestProbeEntityIDPatternValidatorsSeam` in [`internal/Stage0Probe/probe_test.go`](../internal/Stage0Probe/probe_test.go)
-and `TestMemoryReaderInvalidInput` in [`reader/memory_test.go`](../reader/memory_test.go)). Complete entity-ID sets are
-sorted and deduplicated before `limit` is applied, and exceeding a caller's scan budget returns
-`reader.ErrScanBudgetExceeded`.
+Every selector is validated before execution using SemEngine's shared validators (`types.ValidateEntityID`,
+`types.ValidateEntityIDPrefix`, and `types.ValidateEntityIDPattern`, verified at `semengine v0.1.0-alpha.2` by
+`TestPinnedUpstreamSeamsSmoke` in [`internal/harness/contract/deps_test.go`](../internal/harness/contract/deps_test.go),
+`TestMemoryReaderInvalidInput` in [`reader/reader_test.go`](../reader/reader_test.go), and
+`TestNATSRPCReaderConstructorAndInputValidation` in [`reader/nats_test.go`](../reader/nats_test.go)). Complete entity-ID
+sets are sorted and deduplicated before `limit` is applied, and exceeding a caller's scan budget returns
+`reader.ErrScanBudgetExceeded`. `NATSRPCReader` resolves query subjects exclusively from `graph.QueryVerbs()`, paginates
+until `NextCursor == ""` without treating a short byte-trimmed page as exhaustion, and fails closed with
+`reader.ErrPatternCapabilityUnsupported` if a server returns an entity outside the requested selector
+(`TestScanPatternReaderParity` and `TestNATSRPCReaderShortPagesContinuationAndFailClosed` in
+[`reader/nats_test.go`](../reader/nats_test.go)).
 
 ## Query planning, folding, and virtual unfolding (`sparql`)
 
@@ -126,8 +138,8 @@ queries avoid full scans whenever a more specific access path exists:
 SemEngine entities encode their domain and type in segments 4 and 5 of the six-part entity ID rather than storing an
 explicit `rdf:type` triple. [`sparql.VirtualTypeIRIsForEntityID`](../sparql/types.go) resolves `domain.type` via
 `vocabulary.GetEntityTypeMetadata` (and any `WildcardTypes` fallback registered in `semvocab` packs, verified at
-`semvocab v0.1.0` by `TestProbeSemVocabPacksSeam` in
-[`internal/Stage0Probe/probe_test.go`](../internal/Stage0Probe/probe_test.go)) and expands transitive `Superclasses`.
+`semvocab v0.1.0` by `TestPinnedUpstreamSeamsSmoke` in
+[`internal/harness/contract/deps_test.go`](../internal/harness/contract/deps_test.go)) and expands transitive `Superclasses`.
 Explicit stored `rdf:type` triples and virtual `rdf:type` triples are merged as an RDF set without duplicate solutions.
 At startup, [`sparql.ValidateSuperclassClosure`](../sparql/types.go) verifies that every registered entity type's
 `Superclasses` list is transitively closed, failing `server.New` with `ErrIncompleteSuperclassClosure` if any transitive
@@ -158,7 +170,7 @@ graph of candidate entities (`TestBGPFoldingCollapsesDIEKMChains` and `TestPropB
 Because the terminal triple of a `ProjectionSpec` chain uses a full `ValuePredicateIRI` (`diekm:altitudeMetersValue`)
 rather than the source dotted predicate (`intel.measurement.altitude-m`), `export.Serialize` cannot look up the source
 predicate's `vocabulary.PredicateMetadata.DataType` by predicate name on the terminal triple. As established by probe
-`TestProbeTerminalDatatypePropagationSeam` ([`internal/Stage0Probe/probe_test.go`](../internal/Stage0Probe/probe_test.go)
+`TestProbeTerminalDatatypePropagationSeam` ([`internal/harness/contract/probes_test.go`](../internal/harness/contract/probes_test.go)
 at `semengine v0.1.0-alpha.2`), `UnfoldEntity` serializes a single-triple N-Triples probe of the source triple first and
 propagates the resulting typed literal or `@id` entity reference onto the terminal triple
 (`TestUnfoldTerminalDatatypePropagation` in [`sparql/construct_test.go`](../sparql/construct_test.go)).
@@ -168,7 +180,7 @@ triple against `export.Serialize` in N-Triples mode and fails with `sparql.ErrIn
 be silently omitted by `semengine/vocabulary/export` (`Subject == ""`, `Predicate == ""`, `Object == nil`, `NaN`/`Inf`
 floats, or relative pragmatic datatype strings, proven at `semengine v0.1.0-alpha.2` by
 `TestProbeSerializerInvalidTripleOmissionSeam` in
-[`internal/Stage0Probe/probe_test.go`](../internal/Stage0Probe/probe_test.go)).
+[`internal/harness/contract/probes_test.go`](../internal/harness/contract/probes_test.go)).
 
 ## HTTP endpoints, content negotiation, and safety limits (`server`)
 
@@ -199,9 +211,14 @@ floats, or relative pragmatic datatype strings, proven at `semengine v0.1.0-alph
 | `QueryTimeout` | `10s` | `504 Gateway Timeout` (`query_timeout`) | Never truncated; always `504` |
 | Syntax or unsupported SPARQL feature | — | `400 Bad Request` | — |
 
-### Network bind safety
+### Network bind safety and CLI startup (`cmd/semsparql`)
 
 By default, `server.Config.BindAddress` binds to `127.0.0.1:8080`. [`server.ValidateConfig`](../server/server.go)
 refuses any non-loopback address (`0.0.0.0`, `[::]`, or a LAN IP) with `server.ErrUnsafeExposure` unless either
-`BearerToken` or mutual TLS (`TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert` with a non-nil `ClientCAs` pool)
-is configured (`TestServerAuthAndBindValidation` in [`server/server_test.go`](../server/server_test.go)).
+`BearerToken` (`-bearer-token` or `SEMSPARQL_BEARER_TOKEN`) or mutual TLS (`-tls-cert`, `-tls-key`, and `-tls-client-ca`)
+is configured (`TestServerAuthAndBindValidation` in [`server/server_test.go`](../server/server_test.go) and
+`TestRunConfigAndFlagValidation` in [`cmd/semsparql/main_test.go`](../cmd/semsparql/main_test.go)). Before opening its
+HTTP listener, [`cmd/semsparql`](../cmd/semsparql/main.go) registers `packs.RegisterBFOCCOCore` and `diekm.Register`,
+checks `sparql.ValidateSuperclassClosure`, connects to NATS, and runs `NATSRPCReader.VerifyPatternCapability` (the D.2
+`TestProbeServerPatternCapabilitySeam` check) so an incompatible legacy server is refused before traffic is accepted
+(`TestRunRefusesIncompatibleLegacyNATSResponder` in [`cmd/semsparql/main_test.go`](../cmd/semsparql/main_test.go)).

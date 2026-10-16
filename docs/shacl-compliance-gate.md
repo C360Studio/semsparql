@@ -6,10 +6,8 @@ export a complete, unfolded RDF graph in Turtle, N-Triples, or JSON-LD so an ext
 `shacl`, or TopBraid `shaclvalidate`) can check it and produce a standard `sh:ValidationReport`.
 
 This page shows how to export unfolded DIEKM (Defense Intelligence Enterprise Knowledge Model), Basic Formal Ontology
-2.0 (BFO 2.0), and Common Core Ontologies (CCO) graphs from SemSparql's `server` package (`POST /export` and
-`POST /sparql`) and validate them with an external SHACL tool. Note that the standalone `cmd/semsparql` binary and
-`reader.NATSRPCReader` land in Task 4.1 and are not present in the tree yet; the examples below run against a local
-`server.Server` instance (or `httptest.Server` in Go tests).
+2.0 (BFO 2.0), and Common Core Ontologies (CCO) graphs from SemSparql (`cmd/semsparql` or `server.Server` over
+`POST /export` and `POST /sparql`) and validate them with an external SHACL tool.
 
 ## Why unfolding is required before SHACL validation
 
@@ -34,14 +32,14 @@ properties required by SHACL validators (verified by `TestConstructUnfoldsReifie
    IRIs.
 3. **Unmangled ontology predicate IRIs**: full `http://` and `https://` step and value predicate IRIs from
    `ProjectionSpec` (`obo:BFO_0000196`, `cco:ont00001904`, `diekm:altitudeMetersValue`) pass through `export.Serialize`
-   verbatim (`TestProbeExporterBlankNodeAndFullPredicateIRISeam` in
-   [`internal/Stage0Probe/probe_test.go`](../internal/Stage0Probe/probe_test.go)).
+   verbatim (`TestPinnedUpstreamSeamsSmoke` in
+   [`internal/harness/contract/deps_test.go`](../internal/harness/contract/deps_test.go)).
 4. **Terminal datatype propagation and loud failure on invalid triples**: terminal values preserve their XSD datatype
    (`xsd:double`, `xsd:integer`, `xsd:boolean`, `xsd:dateTime`, `rdf:JSON`) or `@id` entity reference, and
    [`sparql.ValidateGraphTriples`](../sparql/construct.go) fails the export with HTTP `500`
    (`invalid_output_triple`) if any triple would be silently skipped by `export.Serialize`
    (`TestProbeSerializerInvalidTripleOmissionSeam` in
-   [`internal/Stage0Probe/probe_test.go`](../internal/Stage0Probe/probe_test.go)).
+   [`internal/harness/contract/probes_test.go`](../internal/harness/contract/probes_test.go)).
 
 ## Step 1: Export an unfolded Turtle graph from SemSparql
 
