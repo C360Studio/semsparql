@@ -1,6 +1,10 @@
-# Reification bridge
+# reification-bridge Specification
 
-## ADDED Requirements
+## Purpose
+Defines complete-chain `ProjectionSpec` folding, equivalent virtual-unfolded fallback evaluation, terminal datatype and
+entity-reference propagation, and complete exporter-owned RDF graph serialization for SemSparql.
+
+## Requirements
 
 ### Requirement: Complete-chain folding
 
@@ -43,8 +47,9 @@ Unsupported folding shapes SHALL evaluate the virtual unfolded graph rather than
 
 ### Requirement: Typed unfolding
 
-Graph-producing operations SHALL unfold projections and virtual types using deterministic blank nodes.
-Terminal objects SHALL preserve source RDF datatype/resource meaning through a verified exporter-owned seam.
+Graph-producing operations SHALL unfold projections and virtual types (including registered superclasses on entity and
+intermediate blank-node classes) using deterministic blank nodes. Terminal objects SHALL preserve source RDF
+datatype/resource meaning through a verified exporter-owned seam.
 
 #### Scenario: Datatype and resource preservation
 

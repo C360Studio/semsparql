@@ -5,7 +5,7 @@
 ### Requirement: Supported query subset
 
 The service SHALL accept SELECT, ASK, CONSTRUCT and DESCRIBE with PREFIX/BASE, BGPs, OPTIONAL, UNION,
-FILTER comparison/logical/bound/regex/str/lang/datatype, DISTINCT, ORDER BY, LIMIT and OFFSET.
+FILTER comparison/arithmetic/logical/bound/regex/str/lang/datatype/sameterm, DISTINCT, ORDER BY, LIMIT and OFFSET.
 Paths SHALL be limited to `rdf:type/rdfs:subClassOf*` and `rdfs:subClassOf*`.
 
 #### Scenario: Unsupported syntax
@@ -67,17 +67,17 @@ accept exactly one JSON prefix or CONSTRUCT selector and negotiate Turtle, N-Tri
 
 ### Requirement: Explicit limits and truncation
 
-The service SHALL default to a 10s query timeout, 10,000 maximum results (solution bindings for SELECT, 1 boolean
-result for ASK, and deduplicated output RDF triples for CONSTRUCT, DESCRIBE and POST /export), 100,000 entities read,
-64 KiB maximum SPARQL query length and 256 KiB maximum POST /export body size. Default limit failures SHALL NOT return
-successful partial results.
+The service SHALL default to a 10s query timeout, 10,000 maximum results (intermediate and output solution bindings for
+SELECT, 1 boolean result for ASK, and deduplicated output RDF triples for CONSTRUCT, DESCRIBE and POST /export),
+100,000 entities read, 64 KiB maximum SPARQL query length and 256 KiB maximum POST /export body size. Default limit
+failures SHALL NOT return successful partial results.
 
 #### Scenario: Default breach
 
 - **WHEN** a result cap or scan budget is reached without truncation consent, or a query timeout expires
 - **THEN** result/scan breaches return HTTP 422 Unprocessable Entity and timeouts return HTTP 504 Gateway Timeout naming
-  the breached limit (`result_limit_exceeded`, `scan_budget_exceeded` or `query_timeout`) without claiming a complete
-  result.
+  the breached limit (`sparql_result_limit_exceeded`, `sparql_scan_budget_exceeded` or `sparql_query_timeout`) without
+  claiming a complete result.
 
 #### Scenario: Explicit truncation
 

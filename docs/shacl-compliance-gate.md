@@ -18,7 +18,7 @@ multi-step reified blank-node chains (anonymous intermediate RDF nodes written `
 `cco:ont00000253` InformationBearingEntity chain).
 
 When SemSparql executes `CONSTRUCT`, `DESCRIBE`, `GET /entities/{entity_id}.jsonld`, or `POST /export`,
-[`sparql.UnfoldEntity`](../sparql/construct.go) and [`server.WriteGraphResult`](../server/results.go) guarantee four
+[`sparql.UnfoldEntity`](../sparql/construct.go) and [`server.WriteGraphResult`](../server/negotiate.go) guarantee four
 properties required by SHACL validators (verified by `TestConstructUnfoldsReifiedGraphForSHACL` and
 `TestUnfoldTerminalDatatypePropagation` in [`sparql/construct_test.go`](../sparql/construct_test.go), using
 `semengine v0.1.0-alpha.2` and `semvocab v0.1.0`):
@@ -27,7 +27,7 @@ properties required by SHACL validators (verified by `TestConstructUnfoldsReifie
    (for example, `diekm:IntelligencePlatform`, `cco:ont00000713`, and `obo:BFO_0000030`) so `sh:targetClass` selectors
    match without redundant stored type triples.
 2. **Real RDF blank nodes**: intermediate chain nodes use deterministic `_:b_<32hex>` blank-node labels computed by
-   [`irimap.BlankNodeID`](../irimap/bnode.go) and are emitted by `semengine/vocabulary/export` as genuine RDF blank
+   [`irimap.BlankNodeID`](../irimap/mapper.go) and are emitted by `semengine/vocabulary/export` as genuine RDF blank
    nodes (`_:b_...` in Turtle/N-Triples, `{"@id": "_:b_..."}` in JSON-LD), never as string literals or `/subjects/_:`
    IRIs.
 3. **Unmangled ontology predicate IRIs**: full `http://` and `https://` step and value predicate IRIs from
@@ -36,16 +36,16 @@ properties required by SHACL validators (verified by `TestConstructUnfoldsReifie
    [`internal/harness/contract/deps_test.go`](../internal/harness/contract/deps_test.go)).
 4. **Terminal datatype propagation and loud failure on invalid triples**: terminal values preserve their XSD datatype
    (`xsd:double`, `xsd:integer`, `xsd:boolean`, `xsd:dateTime`, `rdf:JSON`) or `@id` entity reference, and
-   [`sparql.ValidateGraphTriples`](../sparql/construct.go) fails the export with HTTP `500`
-   (`invalid_output_triple`) if any triple would be silently skipped by `export.Serialize`
+   `validateOutputTriple` in [`sparql/construct.go`](../sparql/construct.go) fails the export with HTTP `500`
+   (`sparql_invalid_output_triple`) if any triple would be silently skipped by `export.Serialize`
    (`TestProbeSerializerInvalidTripleOmissionSeam` in
    [`internal/harness/contract/probes_test.go`](../internal/harness/contract/probes_test.go)).
 
 ## Step 1: Export an unfolded Turtle graph from SemSparql
 
 Do not pass `X-Semsparql-Allow-Truncation: true` in a compliance gate. By leaving truncation disabled (the default),
-SemSparql returns HTTP `422 Unprocessable Entity` (`result_limit_exceeded` or `scan_budget_exceeded`) or `504 Gateway
-Timeout` (`query_timeout`) instead of a partial graph that could falsely pass a SHACL check.
+SemSparql returns HTTP `422 Unprocessable Entity` (`sparql_result_limit_exceeded` or `sparql_scan_budget_exceeded`) or
+`504 Gateway Timeout` (`sparql_query_timeout`) instead of a partial graph that could falsely pass a SHACL check.
 
 ### Option A: Export an entity prefix via `POST /export`
 
@@ -62,7 +62,8 @@ curl --fail -sS -X POST "http://127.0.0.1:8080/export" \
 
 ### Option B: Export a subgraph via `CONSTRUCT`
 
-Send either `POST /export` with `{"construct": "..."}` or `POST /sparql`:
+Send either `POST /export` with `{"construct": "..."}` or `POST /sparql` (anchored by a selective class or predicate
+pattern, since standalone unconstrained `?s ?p ?o` is rejected):
 
 ```bash
 curl --fail -sS -X POST "http://127.0.0.1:8080/sparql" \
@@ -70,14 +71,20 @@ curl --fail -sS -X POST "http://127.0.0.1:8080/sparql" \
   -H "Accept: text/turtle" \
   --data-binary @- <<'SPARQL' > data-graph.ttl
 PREFIX diekm: <https://w3id.org/c360/diekm#>
-CONSTRUCT WHERE {
+CONSTRUCT {
   ?s ?p ?o .
+}
+WHERE {
+  ?s a diekm:IntelligencePlatform ;
+     ?p ?o .
 }
 SPARQL
 ```
 
 For an entity `c360.ops.uas1.intel.platform.alpha` with `intel.role.assigned = "ISR"` and
-`intel.measurement.altitude-m = 1500.5`, `data-graph.ttl` contains:
+`intel.measurement.altitude-m = 1500.5` (when `semsparql` is started with `-base-iri https://semengine.local`; the
+default `-base-iri` is `https://semengine.c360.io`), `POST /export` with `{"prefix":"c360.ops.uas1.intel.platform"}`
+writes `data-graph.ttl`:
 
 ```turtle
 @prefix cco: <https://www.commoncoreontologies.org/> .
@@ -169,17 +176,19 @@ diekm:AltitudeChainShape
 
 ## Step 3: Run an external SHACL validator to produce `sh:ValidationReport`
 
-Using Apache Jena's `shacl` CLI or `pyshacl`:
+Using `pyshacl` or Apache Jena's `shacl` CLI:
 
 ```bash
-# Apache Jena shacl CLI
-shacl validate --shapes diekm-shapes.ttl --data data-graph.ttl > validation-report.ttl
-
-# Or pyshacl (exits non-zero when sh:conforms is false)
+# pyshacl (exits non-zero when sh:conforms is false)
 pyshacl -s diekm-shapes.ttl -df turtle -sf turtle -f turtle -o validation-report.ttl data-graph.ttl
+
+# Or Apache Jena shacl CLI (process exit code on sh:conforms false is not promised across Jena versions;
+# inspect sh:conforms true in validation-report.ttl in CI gates)
+shacl validate --shapes diekm-shapes.ttl --data data-graph.ttl > validation-report.ttl
+grep -Eq 'sh:conforms[[:space:]]+true' validation-report.ttl
 ```
 
-When `data-graph.ttl` conforms to `diekm-shapes.ttl`, the validator exits `0` and writes a `sh:ValidationReport` with
+When `data-graph.ttl` conforms to `diekm-shapes.ttl`, the validator writes a `sh:ValidationReport` with
 `sh:conforms true`:
 
 ```turtle
@@ -192,5 +201,6 @@ When `data-graph.ttl` conforms to `diekm-shapes.ttl`, the validator exits `0` an
 ] .
 ```
 
-If an entity violates a shape (for example, an `IntelligencePlatform` has no `intel.role.assigned` triple), the external
-validator exits non-zero and emits a `sh:ValidationResult` naming the offending entity IRI and `sh:sourceShape`.
+If an entity violates a shape (for example, an `IntelligencePlatform` has no `intel.role.assigned` triple), `pyshacl`
+exits non-zero and the report emits `sh:conforms false` alongside a `sh:ValidationResult` naming the offending entity
+IRI and `sh:sourceShape`.

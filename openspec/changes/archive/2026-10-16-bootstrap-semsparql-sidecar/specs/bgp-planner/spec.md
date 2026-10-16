@@ -47,14 +47,18 @@ an IRI has no matches.
 
 ### Requirement: Virtual types and ancestry
 
-Type evaluation SHALL combine explicit and virtual types as graph sets, support registered superclass
-entailment, and require complete registered ancestor closure at startup.
+Type evaluation SHALL combine explicit stored `rdf:type` triples on candidate entities and virtual types derived from
+entity IDs as graph sets, keep bound registered-class `?s a <C>` and `?s rdf:type/rdfs:subClassOf* <C>` scans selective
+(`org.platform.*.domain.type.*` plus registered projection node-class predicates) without falling back to a full-graph
+scan, support registered superclass entailment, and require complete registered ancestor closure at startup.
 
 #### Scenario: Bound class scan
 
-- **WHEN** a class matches registered domain/type keys without stored rdf:type
-- **THEN** the reader uses org.platform.*.domain.type.* patterns, wildcarding unconstrained org/platform and charging
-  scan budget.
+- **WHEN** a query constrains `?s rdf:type <C>` or `?s rdf:type/rdfs:subClassOf* <C>` for a registered class or
+  projection node class `<C>`
+- **THEN** the planner and executor read only matching `org.platform.*.domain.type.*` patterns and projection predicates
+  (charging the scan budget) so non-matching entities never cross NATS, and merge virtual and explicit `rdf:type`
+  triples on matched candidate entities.
 
 #### Scenario: Unbound class
 
@@ -96,13 +100,17 @@ RDF graph/ID sets SHALL be deduplicated, while solution sequences SHALL preserve
 
 ### Requirement: Bounded evaluation
 
-The executor SHALL enforce query timeout, result cap and entities-read budget across plans and fallback paths.
-Default breaches SHALL return identifiable errors, not successful partial results.
+The executor SHALL enforce query timeout, result cap (bounding both intermediate solution buffers and output rows/triples)
+and entities-read budget across plans and fallback paths. Default breaches SHALL return identifiable errors, not
+successful partial results.
 
 #### Scenario: Unconstrained scan
 
-- **WHEN** ?s ?p ?o requires more than the available entity budget
-- **THEN** evaluation stops with a scan-budget error; it never silently returns a prefix of the solution sequence.
+- **WHEN** a BGP contains only unconstrained `?s ?p ?o` patterns with no selective anchor, or a selective scan requires
+  more than the available entity budget
+- **THEN** standalone unconstrained `?s ?p ?o` is rejected at plan time (`ErrUnconstrainedScan`) and budget-exceeding
+  scans stop with `ErrScanBudgetExceeded`; evaluation never silently returns an unflagged prefix of the solution
+  sequence.
 
 #### Scenario: Resource exhaustion
 

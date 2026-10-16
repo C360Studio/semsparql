@@ -52,7 +52,9 @@ flowchart LR
 SemSparql never invents its own entity IRI format. [`irimap.Mapper.EntityIDToIRI`](../irimap/mapper.go) delegates
 forward conversion directly to `export.SubjectIRI(entityID, baseIRI)` in `semengine/vocabulary/export` (verified at
 `semengine v0.1.0-alpha.2` by `TestIRIMapperMatchesExporter` and `TestPropIRIMapperRoundTrip` in
-[`irimap/mapper_test.go`](../irimap/mapper_test.go)):
+[`irimap/mapper_test.go`](../irimap/mapper_test.go)). By default, `server.Config.BaseIRI` and `-base-iri` use
+`vocabulary.SemEngineBase` (`https://semengine.c360.io`); with a custom `-base-iri https://semengine.local`, the
+mapping is:
 
 ```text
 c360.ops.uas1.intel.platform.alpha
@@ -65,7 +67,7 @@ fragments, non-matching base IRIs, and non-entity `/subjects/...` fallback paths
 
 Upper ontologies such as Basic Formal Ontology 2.0 (BFO 2.0) and Common Core Ontologies (CCO) represent a single numeric
 or role attribute as a chain of intermediate RDF blank nodes (anonymous resources written `_:label` that link an entity
-to a role, quality, or measurement node). [`irimap.BlankNodeID`](../irimap/bnode.go) derives each intermediate blank
+to a role, quality, or measurement node). [`irimap.BlankNodeID`](../irimap/mapper.go) derives each intermediate blank
 node deterministically from the source triple and zero-based step index:
 
 ```text
@@ -84,7 +86,8 @@ input uses the exporter's own N-Triples object token, `float64(1500.5)` and `150
 [`reader.GraphReader`](../reader/reader.go) exposes five read-only operations:
 
 1. `GetEntity(ctx, id)` fetches one entity by its exact six-part ID.
-2. `GetBatch(ctx, ids)` fetches a sorted, deduplicated batch of exact six-part IDs.
+2. `GetBatch(ctx, ids)` fetches a sorted, deduplicated batch of exact six-part IDs (adaptively splitting oversized NATS
+   batch responses on `response_too_large`).
 3. `ScanPrefix(ctx, prefix, limit)` scans entities under a validated 1-to-6 segment dot-separated prefix (`c360.ops`).
 4. `ScanPattern(ctx, pattern, limit)` scans entities matching a six-slot wildcard pattern (`c360.ops.*.intel.platform.*`
    or `*.*.*.*.*.*`).
@@ -96,11 +99,13 @@ Every selector is validated before execution using SemEngine's shared validators
 `TestMemoryReaderInvalidInput` in [`reader/reader_test.go`](../reader/reader_test.go), and
 `TestNATSRPCReaderConstructorAndInputValidation` in [`reader/nats_test.go`](../reader/nats_test.go)). Complete entity-ID
 sets are sorted and deduplicated before `limit` is applied, and exceeding a caller's scan budget returns
-`reader.ErrScanBudgetExceeded`. `NATSRPCReader` resolves query subjects exclusively from `graph.QueryVerbs()`, paginates
-until `NextCursor == ""` without treating a short byte-trimmed page as exhaustion, and fails closed with
-`reader.ErrPatternCapabilityUnsupported` if a server returns an entity outside the requested selector
-(`TestScanPatternReaderParity` and `TestNATSRPCReaderShortPagesContinuationAndFailClosed` in
-[`reader/nats_test.go`](../reader/nats_test.go)).
+`reader.ErrScanBudgetExceeded` alongside the bounded slice of up to `limit` entities for opt-in truncation callers.
+`NATSRPCReader` resolves query subjects exclusively from `graph.QueryVerbs()`, paginates until `NextCursor == ""`
+without treating a short byte-trimmed page as exhaustion, and fails closed with `reader.ErrPatternCapabilityUnsupported`
+if a server returns an entity outside the requested selector (`TestScanPatternReaderParity` and
+`TestNATSRPCReaderShortPagesContinuationAndFailClosed` in [`reader/nats_test.go`](../reader/nats_test.go), and
+`TestRunEndToEndWithLiveNATSAndGraphIngest` / `TestRunRefusesIncompatibleLegacyNATSResponder` in
+[`cmd/semsparql/main_test.go`](../cmd/semsparql/main_test.go)).
 
 ## Query planning, folding, and virtual unfolding (`sparql`)
 
@@ -108,52 +113,54 @@ until `NextCursor == ""` without treating a short byte-trimmed page as exhaustio
 
 [`sparql.Parse`](../sparql/parser.go) parses read-only SPARQL 1.1 `SELECT`, `ASK`, `CONSTRUCT` (including
 `CONSTRUCT WHERE`), and `DESCRIBE` queries with `BASE`, `PREFIX`, Basic Graph Patterns (BGPs, sets of triple patterns
-that must match together), `OPTIONAL`, `UNION`, `FILTER` (`=`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`, `BOUND`,
-`isIRI`/`isURI`, `isBlank`, `isLiteral`, `STR`, `LANG`, `DATATYPE`, `REGEX`, `CONTAINS`, `STRSTARTS`, `STRENDS`),
-`RDF.type` shorthand `a`, property paths `rdf:type/rdfs:subClassOf*` and standalone `rdfs:subClassOf*`, `DISTINCT`,
-`ORDER BY`, `LIMIT`, and `OFFSET`.
+that must match together), `OPTIONAL`, `UNION`, `FILTER` (`=`, `!=`, `<`, `<=`, `>`, `>=`, `+`, `-`, `*`, `/`, `&&`,
+`||`, `!`, `BOUND`, `STR`, `LANG`, `DATATYPE`, `SAMETERM`, `REGEX`), `RDF.type` shorthand `a`, property paths
+`rdf:type/rdfs:subClassOf*` and standalone `rdfs:subClassOf*`, `DISTINCT`, `ORDER BY`, `LIMIT`, and `OFFSET`.
 
 Out-of-scope SPARQL 1.1 features (SPARQL Update, `SERVICE`, `GRAPH`, `FROM`, `GROUP BY`, `HAVING`, aggregates,
 subqueries, `VALUES`, `BIND`, `MINUS`, `REDUCED`, and arbitrary property paths) are rejected at parse time with an
-`UnsupportedFeatureError` naming the rejected construct (`TestUnsupportedFeatureErrors` in
-[`sparql/parser_test.go`](../sparql/parser_test.go)).
+error wrapping `sparql.ErrUnsupportedFeature` (`sparql_unsupported_feature`) naming the rejected construct
+(`TestUnsupportedFeatureErrors` in [`sparql/parser_test.go`](../sparql/parser_test.go)).
 
 ### Access priority
 
-[`sparql.PlanBGPWithScope`](../sparql/planner.go) orders triple patterns and folded chains by selectivity so that
-queries avoid full scans whenever a more specific access path exists:
+`planBGPWithScope` in [`sparql/planner.go`](../sparql/planner.go) orders triple patterns and folded chains by
+selectivity (and the executor's dynamic step picker re-evaluates candidate selectivity using variables bound at runtime)
+so that queries avoid full scans whenever a more specific access path exists:
 
 1. **`AccessExactEntity`**: the subject is a bound entity IRI or a previous step already bound the subject variable.
 2. **`AccessTypePattern`**: the pattern is `?s rdf:type <ClassIRI>` or `?s rdf:type/rdfs:subClassOf* <ClassIRI>` and
-   `<ClassIRI>` resolves through `vocabulary.ListRegisteredEntityTypes()` to one or more `(domain, type)` pairs,
-   producing `<org>.<platform>.*.<domain>.<type>.*` patterns.
+   `<ClassIRI>` resolves through `vocabulary.ListRegisteredEntityTypes()` (or a registered `ProjectionSpec`
+   `NodeClassIRI`) to selective `<org>.<platform>.*.<domain>.<type>.*` patterns and projection predicates so non-matching
+   entities never cross NATS.
 3. **`AccessPredicate`**: the predicate is a known IRI that resolves through `vocabulary.LookupByIRI` or a registered
    `ProjectionSpec` step/value IRI to candidate dotted predicates. Multiple dotted predicates sharing a `StandardIRI`
    are unioned and deduplicated (`TestLookupByIRIMultiMatchUnion` in
    [`sparql/executor_test.go`](../sparql/executor_test.go)).
-4. **`AccessFullScan`**: unconstrained patterns such as `?s ?p ?o` scan `*.*.*.*.*.*` under the per-query entity scan
-   budget (`MaxScanEntities`).
+4. **`AccessFullScan`**: unconstrained patterns such as `?s ?p ?o` are rejected at plan time with
+   `sparql.ErrUnconstrainedScan` unless bounded by a selective peer pattern in the same BGP.
 
 ### Virtual `rdf:type` and subclass closure
 
 SemEngine entities encode their domain and type in segments 4 and 5 of the six-part entity ID rather than storing an
-explicit `rdf:type` triple. [`sparql.VirtualTypeIRIsForEntityID`](../sparql/types.go) resolves `domain.type` via
-`vocabulary.GetEntityTypeMetadata` (and any `WildcardTypes` fallback registered in `semvocab` packs, verified at
-`semvocab v0.1.0` by `TestPinnedUpstreamSeamsSmoke` in
-[`internal/harness/contract/deps_test.go`](../internal/harness/contract/deps_test.go)) and expands transitive `Superclasses`.
-Explicit stored `rdf:type` triples and virtual `rdf:type` triples are merged as an RDF set without duplicate solutions.
-At startup, [`sparql.ValidateSuperclassClosure`](../sparql/types.go) verifies that every registered entity type's
-`Superclasses` list is transitively closed, failing `server.New` with `ErrIncompleteSuperclassClosure` if any transitive
-ancestor is missing.
+explicit `rdf:type` triple. [`sparql.ResolveTypes`](../sparql/types.go) resolves `domain.type` via
+`vocabulary.LookupTypeIRIs` (merging specific `domain.type` entries with any `"*"` wildcard entries registered in
+`semvocab` packs, verified at `semvocab v0.1.0` by `TestPinnedUpstreamSeamsSmoke` in
+[`internal/harness/contract/deps_test.go`](../internal/harness/contract/deps_test.go)) and expands transitive
+`Superclasses` via `vocabulary.GetEntityTypeMetadata`. Explicit stored `rdf:type` triples on candidate entities and
+virtual `rdf:type` triples are merged as an RDF set without duplicate solutions. At startup,
+[`sparql.ValidateSuperclassClosure`](../sparql/types.go) verifies that every registered entity type's `Superclasses`
+list is transitively closed, failing `server.New` with `ErrIncompleteSuperclassClosure` if any transitive ancestor is
+missing.
 
 ### Complete-chain folding vs. virtual unfolded fallback
 
 In `semvocab` packs such as DIEKM (`semvocab v0.1.0`), a flat dotted predicate like `intel.measurement.altitude-m`
 carries a multi-step `vocabulary.ProjectionSpec` that expands one stored triple into a chain of BFO/CCO blank-node
-triples. [`sparql.FoldProjections`](../sparql/folding.go) detects when a BGP contains every step link, `NodeClassIRI`
-type assertion, and terminal `ValuePredicateIRI` triple of a registered `ProjectionSpec` (with intermediate variables
-not escaping to outer clauses or `FILTER` expressions) and collapses the chain into a single planned lookup while still
-binding every intermediate variable to its deterministic `irimap.BlankNodeID`.
+triples. `planBGPWithScope` in [`sparql/planner.go`](../sparql/planner.go) detects when a BGP contains every step link,
+`NodeClassIRI` type assertion, and terminal `ValuePredicateIRI` triple of a registered `ProjectionSpec` (with
+intermediate variables not escaping to outer clauses or `FILTER` expressions) and collapses the chain into a single
+planned lookup while still binding every intermediate variable to its deterministic `irimap.BlankNodeID`.
 
 When a query writes a partial chain, omits a `NodeClassIRI` type assertion, filters an intermediate blank node, or uses
 a variable predicate, folding does not apply and the executor evaluates the pattern against the virtual unfolded RDF
@@ -166,21 +173,23 @@ graph of candidate entities (`TestBGPFoldingCollapsesDIEKMChains` and `TestPropB
 
 - Virtual `rdf:type` triples (`ClassIRI` and `Superclasses`) from the entity ID.
 - Unprojected stored triples (plus superclass `rdf:type` expansion when a stored triple asserts `rdf:type`).
-- Multi-step blank-node chains for every stored triple whose predicate carries a `ProjectionSpec`.
+- Multi-step blank-node chains for every stored triple whose predicate carries a `ProjectionSpec` (including transitive
+  `Superclasses` on each intermediate blank node's `NodeClassIRI`).
 
 Because the terminal triple of a `ProjectionSpec` chain uses a full `ValuePredicateIRI` (`diekm:altitudeMetersValue`)
 rather than the source dotted predicate (`intel.measurement.altitude-m`), `export.Serialize` cannot look up the source
 predicate's `vocabulary.PredicateMetadata.DataType` by predicate name on the terminal triple. As established by probe
 `TestProbeTerminalDatatypePropagationSeam` ([`internal/harness/contract/probes_test.go`](../internal/harness/contract/probes_test.go)
-at `semengine v0.1.0-alpha.2`), `UnfoldEntity` serializes a single-triple N-Triples probe of the source triple first and
-propagates the resulting typed literal or `@id` entity reference onto the terminal triple
-(`TestUnfoldTerminalDatatypePropagation` in [`sparql/construct_test.go`](../sparql/construct_test.go)).
+at `semengine v0.1.0-alpha.2`), `UnfoldEntity` extracts the canonical predicate and object token via
+`irimap.CanonicalNTriplesPredicateAndObject` (`export.SerializeToString(..., export.NTriples)`) and propagates the
+resulting typed literal or `@id` entity reference onto the terminal triple (`TestUnfoldTerminalDatatypePropagation` in
+[`sparql/construct_test.go`](../sparql/construct_test.go)).
 
-Before any graph response is written, [`sparql.ValidateGraphTriples`](../sparql/construct.go) verifies every output
-triple against `export.Serialize` in N-Triples mode and fails with `sparql.ErrInvalidOutputTriple` if any triple would
-be silently omitted by `semengine/vocabulary/export` (`Subject == ""`, `Predicate == ""`, `Object == nil`, `NaN`/`Inf`
-floats, or relative pragmatic datatype strings, proven at `semengine v0.1.0-alpha.2` by
-`TestProbeSerializerInvalidTripleOmissionSeam` in
+Before any graph response is written, `validateOutputTriple` in [`sparql/construct.go`](../sparql/construct.go)
+verifies every output triple against `irimap.CanonicalNTriplesPredicateAndObject` (`export.SerializeToString` in
+N-Triples mode) and fails with `sparql.ErrInvalidOutputTriple` if any triple would be silently omitted by
+`semengine/vocabulary/export` (`Subject == ""`, `Predicate == ""`, `Object == nil`, `NaN`/`Inf` floats, or relative
+pragmatic datatype strings, proven at `semengine v0.1.0-alpha.2` by `TestProbeSerializerInvalidTripleOmissionSeam` in
 [`internal/harness/contract/probes_test.go`](../internal/harness/contract/probes_test.go)).
 
 ## HTTP endpoints, content negotiation, and safety limits (`server`)
@@ -199,7 +208,7 @@ floats, or relative pragmatic datatype strings, proven at `semengine v0.1.0-alph
   `text/tab-separated-values`.
 - `ASK` supports `application/sparql-results+json` and `application/sparql-results+xml`.
 - `CONSTRUCT`, `DESCRIBE`, and `POST /export` support `text/turtle`, `application/n-triples`, and `application/ld+json`.
-- Incompatible `Accept` headers return `406 Not Acceptable`.
+- Incompatible `Accept` headers (including explicit `q=0` exclusions) return `406 Not Acceptable`.
 
 ### Resource limits and error statuses
 
@@ -207,7 +216,7 @@ floats, or relative pragmatic datatype strings, proven at `semengine v0.1.0-alph
 | --- | --- | --- | --- |
 | `MaxQueryBytes` (`/sparql` query) | `64 KiB` | `413 Content Too Large` | Never truncated; always `413` |
 | `MaxExportBytes` (`POST /export` body) | `256 KiB` | `413 Content Too Large` | Never truncated; always `413` |
-| `MaxResults` (`SELECT` bindings or deduplicated graph triples) | `10,000` | `422 Unprocessable Entity` (`result_limit_exceeded`) | `200 OK` with `X-Semsparql-Truncated: true` and `X-Semsparql-Truncation-Reason: result_limit` |
+| `MaxResults` (`SELECT` intermediate/output bindings or deduplicated graph triples) | `10,000` | `422 Unprocessable Entity` (`result_limit_exceeded`) | `200 OK` with `X-Semsparql-Truncated: true` and `X-Semsparql-Truncation-Reason: result_limit` |
 | `MaxScanEntities` (entities read per request) | `100,000` | `422 Unprocessable Entity` (`scan_budget_exceeded`) | `200 OK` with `X-Semsparql-Truncated: true` and `X-Semsparql-Truncation-Reason: scan_budget` |
 | `QueryTimeout` | `10s` | `504 Gateway Timeout` (`query_timeout`) | Never truncated; always `504` |
 | Syntax or unsupported SPARQL feature | — | `400 Bad Request` | — |
@@ -220,6 +229,8 @@ refuses any non-loopback address (`0.0.0.0`, `[::]`, or a LAN IP) with `server.E
 is configured (`TestServerAuthAndBindValidation` in [`server/server_test.go`](../server/server_test.go) and
 `TestRunConfigAndFlagValidation` in [`cmd/semsparql/main_test.go`](../cmd/semsparql/main_test.go)). Before opening its
 HTTP listener, [`cmd/semsparql`](../cmd/semsparql/main.go) registers `packs.RegisterBFOCCOCore` and `diekm.Register`,
-checks `sparql.ValidateSuperclassClosure`, connects to NATS, and runs `NATSRPCReader.VerifyPatternCapability` (the D.2
-`TestProbeServerPatternCapabilitySeam` check) so an incompatible legacy server is refused before traffic is accepted
-(`TestRunRefusesIncompatibleLegacyNATSResponder` in [`cmd/semsparql/main_test.go`](../cmd/semsparql/main_test.go)).
+checks `sparql.ValidateSuperclassClosure`, connects to NATS, and runs `NATSRPCReader.VerifyPatternCapability`
+(modeled in `TestProbeServerPatternCapabilitySeam` and proven against live `graph-ingest` in
+`TestRunEndToEndWithLiveNATSAndGraphIngest` and `TestRunRefusesIncompatibleLegacyNATSResponder` in
+[`cmd/semsparql/main_test.go`](../cmd/semsparql/main_test.go)) so an incompatible legacy server is refused before
+traffic is accepted.

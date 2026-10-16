@@ -1,13 +1,12 @@
-# Bootstrap sidecar design draft
+# Bootstrap sidecar design
 
 ## Status and evidence
 
-This translates [issue #1](https://github.com/C360Studio/semsparql/issues/1) into proposed target behavior.
-It is not an approved design or an implemented feature. The complete [inventory](inventory.md) is retained as
-reviewed evidence, including collisions, adopter findings and unproved seams; nothing there is superseded silently.
-Independent inventory review returned `INVENTORY PASS` at SHA-256
-`3c89c52a5e7491ab764a60a3473d79f9e7a42af56c05dbbb023bc61c870d5c09`. Base is `b64f35e989a1b3fd12d81629ae1c339bf7ade823`.
-Tests cited in the inventory were read, not run. No new library timing, failure or ordering guarantee is inferred.
+This design implements [issue #1](https://github.com/C360Studio/semsparql/issues/1) across Tasks `0.1`–`4.2`, `5.1`,
+and `6.1`. The complete [inventory](inventory.md) is retained as reviewed baseline evidence, including collisions,
+adopter findings and upstream seams; nothing there is superseded silently. Independent inventory review returned
+`INVENTORY PASS` at SHA-256 `3c89c52a5e7491ab764a60a3473d79f9e7a42af56c05dbbb023bc61c870d5c09` (base
+`b64f35e989a1b3fd12d81629ae1c339bf7ade823`). No unverified library timing, failure or ordering guarantee is inferred.
 
 ## Dependencies and integration order
 
@@ -24,18 +23,17 @@ replacement, pseudo-version, fork or copy of either dependency is permitted (`Te
 
 PR #3 changes CI setup-node; PR #4 changes OpenSpec tooling. Neither overlaps these paths or capabilities.
 There is no required merge order with this change; if #4 lands first, revalidate with its new tooling pin.
-Implementation proceeds 0 → 1 → 2 (MVP) → 3 → 4. Task 0.1 (`go.mod`, Go gates, and `internal/harness/contract`
-structural guards), task 0.2, task 1.1 (`irimap`), task 1.2 (`reader.GraphReader` and `reader.MemoryReader`), task 2.1
-(`sparql` AST and parser), task 2.2 (`sparql` plain-BGP `SELECT`/`ASK` planner and executor), task 2.3 (`server`
-`GET`/`POST /sparql`, `SELECT`/`ASK` result negotiation and serialization, bounded input/query budgets, and
-localhost/auth bind defaults), task 3.1 (`sparql` virtual `rdf:type` and `rdfs:subClassOf*` resolution, standalone
-registered-class closure evaluation, explicit/virtual graph-set merging, and startup `ValidateSuperclassClosure` checked
-by `server.New`), task 3.2 (`sparql` complete-chain `ProjectionSpec` folding and equivalent virtual-unfolded
-fallback evaluation), task 3.3 (`sparql` `CONSTRUCT`/`DESCRIBE`, `UnfoldEntity`, terminal datatype propagation, and
-loud invalid-triple validation; `server` `GET /entities/{entity_id}.jsonld` and `POST /export`; `docs/architecture.md`
-and `docs/shacl-compliance-gate.md`), and task 4.1 (`reader.NATSRPCReader` and `cmd/semsparql`) are complete; remaining
-task `4.2` is the dedicated `-tags=integration` DIEKM end-to-end suite. Phase 5 is
-optional and separately decided, never an implicit prerequisite for the initial sidecar.
+Implementation proceeded 0 → 1 → 2 (MVP) → 3 → 4 → 5 → 6. Tasks `0.1`, `0.2`, `1.1` (`irimap`), `1.2`
+(`reader.GraphReader` and `reader.MemoryReader`), `2.1` (`sparql` AST and parser), `2.2` (`sparql` plain-BGP
+`SELECT`/`ASK` planner and executor), `2.3` (`server` `GET`/`POST /sparql`, `SELECT`/`ASK` result negotiation and
+serialization, bounded input/query budgets, and localhost/auth bind defaults), `3.1` (`sparql` virtual `rdf:type` and
+`rdfs:subClassOf*` resolution, standalone registered-class closure evaluation, explicit/virtual graph-set merging, and
+startup `ValidateSuperclassClosure` checked by `server.New`), `3.2` (`sparql` complete-chain `ProjectionSpec` folding
+and equivalent virtual-unfolded fallback evaluation), `3.3` (`sparql` `CONSTRUCT`/`DESCRIBE`, `UnfoldEntity`, terminal
+datatype propagation, and loud invalid-triple validation; `server` `GET /entities/{entity_id}.jsonld` and
+`POST /export`; `docs/architecture.md` and `docs/shacl-compliance-gate.md`), `4.1` (`reader.NATSRPCReader` and
+`cmd/semsparql`), `4.2` (`-tags=integration` DIEKM end-to-end suite in `server/diekm_integration_test.go`), `5.1`
+(formal deferral of optional `KVWatchReader`), and `6.1` (OpenSpec reconciliation and archive) are complete.
 
 ## Options considered
 
@@ -61,19 +59,16 @@ optional and separately decided, never an implicit prerequisite for the initial 
 | `server` | GET/POST /sparql, entity JSON-LD, POST /export | SPARQL clients and external SHACL operators |
 | `cmd/semsparql` | Dependency registration, NATS/HTTP composition and lifecycle | Service operators; safe startup requirement |
 
-`irimap` (`Mapper`, `CanonicalNTriplesObject`, `BlankNodeID`), `reader` (`GraphReader`, `MemoryReader`,
-`NATSRPCReader`, `ClassifiedRequester`, `MatchAllPattern`, `ErrNilContext`, `ErrEntityNotFound`,
-`ErrScanBudgetExceeded`, `ErrPatternCapabilityUnsupported`), `sparql` AST/parser, virtual `rdf:type`/`rdfs:subClassOf*`
-resolution, complete-chain `ProjectionSpec` folding and virtual-unfolded fallback, `UnfoldEntity`, `ValidateGraphTriples`,
-and `SELECT`/`ASK`/`CONSTRUCT`/`DESCRIBE` planner/executor (`Parse`, `Query`, `FoldProjections`, `FoldedBGP`,
-`FoldedChain`, `ProjectionPredicatesForStepIRI`, `ProjectionPredicatesForNodeClass`, `AllProjectedPredicates`, `PlanBGP`,
-`PlanBGPWithScope`, `LookupPredicateCandidates`, `Executor`, `ValidateSuperclassClosure`, `TypeScanPatternsForClass`,
-`VirtualTypeIRIsForEntityID`, `SuperclassesForClassIRI`, `SubClassClosurePairs`, `ErrSyntax`, `ErrUnsupportedFeature`,
+`irimap` (`Mapper`, `ValidateBaseIRI`, `CanonicalNTriplesObject`, `CanonicalNTriplesPredicateAndObject`, `BlankNodeID`,
+`ErrNotEntityIRI`, `ErrTripleRejectedByExporter`), `reader` (`GraphReader`, `MemoryReader`, `NATSRPCReader`,
+`ClassifiedRequester`, `WithScanCounter`, `MatchAllPattern`, `ErrNilContext`, `ErrEntityNotFound`,
+`ErrScanBudgetExceeded`, `ErrPatternCapabilityUnsupported`), `sparql` (`Parse`, `Query`, `Executor`, `UnfoldEntity`,
+`ResolveTypes`, `ValidateSuperclassClosure`, `ErrSyntax`, `ErrUnsupportedFeature`, `ErrUnconstrainedScan`,
 `ErrResultLimitExceeded`, `ErrScanBudgetExceeded`, `ErrQueryTimeout`, `ErrIncompleteSuperclassClosure`,
 `ErrInvalidOutputTriple`), `server` (`/sparql`, `/entities/{entity_id}.jsonld`, `/export`, `Server`, `Config`,
 `ValidateConfig`, `NegotiateAccept`, `WriteSelectAskResult`, `WriteGraphResult`, `ErrNotAcceptable`,
-`ErrUnsafeExposure`, `ErrQueryTooLarge`, `ErrExportBodyTooLarge`), and `cmd/semsparql` are implemented in tasks
-1.1–4.1. There is no additional public API for hypothetical users.
+`ErrUnsafeExposure`), and `cmd/semsparql` are implemented across tasks 1.1–4.2. Internal planning, folding, and type
+closure helpers remain unexported inside `sparql` so no uncalled public API is exposed.
 
 ## Read-only query execution
 
@@ -85,7 +80,8 @@ An intentional empty match-all prefix is a separate bounded operation, not a val
 
 Plan constrained access first: exact entity → type pattern → predicate selection → bounded scan.
 Use opaque cursors until the server reports exhaustion; a short page is not exhaustion. Track missing batch
-entities explicitly rather than treating a successful RPC as a complete hydration. Propagate classified failures.
+entities explicitly rather than treating a successful RPC as a complete hydration, and adaptively split oversized NATS
+batch requests on `response_too_large`. Propagate classified failures.
 Reads are live, not a transactional snapshot: inserts before an upstream keyset cursor may be missed. Determinism
 means stable ordering for the same observed data, not consistency across concurrent graph mutations.
 The scan budget bounds entities read, not SemEngine's internal key enumeration; that upstream cost is unbounded
@@ -105,14 +101,17 @@ Parse IDs with upstream named fields in `org.platform.system.domain.type.instanc
 `ErrNotEntityIRI` otherwise. One base is shared with exporter options. Never duplicate forward mapping.
 
 Type metadata supplies ClassIRI and registered superclass membership. Plain `a` queries include registered
-superclasses as issue #1's RDFS entailment policy. Bound type scans use `org.platform.*.domain.type.*`; absent
-org/platform constraints become wildcards. Use server-side Pattern support, with no full-prefix filtering fallback.
+superclasses as issue #1's RDFS entailment policy. Bound type scans (`?s a <C>` or `?s rdf:type/rdfs:subClassOf* <C>`
+for a registered class `<C>`) use `org.platform.*.domain.type.*` patterns (plus any registered projection node-class
+predicates), wildcarding unconstrained org/platform so non-matching entities never cross NATS (owner ruling B1,
+[`#issuecomment-6224587243`](https://github.com/C360Studio/semsparql/issues/1#issuecomment-6224587243)). Use
+server-side Pattern support, with no full-prefix filtering fallback.
 Startup checks ancestor closure when a superclass is itself registered; packs must register all known ancestors.
-Merge explicit and virtual RDF type triples as a graph set. Per owner ruling D.1c, standalone `?sub rdfs:subClassOf*
-?sup` (not paired with `rdf:type`) evaluates over the finite registered ontology class graph in `vocabulary`
-(`ClassIRI` and `Superclasses` across `ListRegisteredEntityTypes()`): reflexive zero-length `(C, C)` holds for every
-registered class/superclass IRI `C` (and for any bound IRI `C`), and `(sub, sup)` holds whenever `sub == sup` or `sup`
-is in `sub`'s registered `Superclasses`.
+Merge explicit stored `rdf:type` triples on candidate entities and virtual RDF type triples as a graph set. Per owner
+ruling D.1c, standalone `?sub rdfs:subClassOf* ?sup` (not paired with `rdf:type`) evaluates over the finite registered
+ontology class graph in `vocabulary` (`ClassIRI` and `Superclasses` across `ListRegisteredEntityTypes()`): reflexive
+zero-length `(C, C)` holds for every registered class/superclass IRI `C` (and for any bound IRI `C`), and `(sub, sup)`
+holds whenever `sub == sup` or `sup` is in `sub`'s registered `Superclasses`.
 
 Complete projection chains fold only when every declared step, optional class constraint and terminal predicate
 is present. Bind intermediate variables to deterministic blank nodes even when projected. Partial chains, extra
@@ -217,5 +216,6 @@ failures through protocol errors. Correctness must not depend on reading documen
 | D.1c Standalone `rdfs:subClassOf*` | Evaluates over the registered `ClassIRI` + `Superclasses` closure in `vocabulary` with reflexive `(C, C)` |
 | D.1d `DESCRIBE` scope | Outgoing entity CBD + virtual `rdf:type` + unfolded blank-node chains; absent/non-entity IRIs yield 0 triples |
 | D.1e `BlankNodeID` `stepIdx` & optional `5.1` | 0-based decimal ASCII `stepIdx` (`strconv.Itoa(i)`); `KVWatchReader` (`5.1`) deferred to a separate change |
+| B1 ([`#issuecomment-6224587243`](https://github.com/C360Studio/semsparql/issues/1#issuecomment-6224587243)) | Bound registered-class `?s a <C>` / `?s rdf:type/rdfs:subClassOf* <C>` stays selective (`<org>.<platform>.*.<domain>.<type>.*` + projection node-class predicates) so non-matching entities never cross NATS |
 
-All D.1 consumer-contract rulings and D.2 upstream probes are complete; runtime tasks `1.1`–`4.2` have no open holds.
+All D.1/B1 consumer-contract rulings, D.2 upstream probes, and runtime tasks `1.1`–`4.2` are complete.

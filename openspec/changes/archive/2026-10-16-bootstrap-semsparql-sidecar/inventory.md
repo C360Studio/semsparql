@@ -191,5 +191,5 @@ Clients should not have to predict result size or scan cost to avoid incomplete 
    `nil` `Object`, or `NaN`/`Inf` floats. Checking each triple via single-triple
    `export.SerializeToString(..., export.NTriples, export.WithBaseIRI(baseIRI))` returns `""` for every omitted triple,
    giving the sidecar an exporter-owned loud-failure check before writing HTTP responses.
-10. Task 0.1 contract tests and D.2 upstream probe tests (`internal/harness/contract`) run in `task verify`; runtime
-    sidecar packages (Phases 1–4) remain planned.
+10. At the Task 0.1 inventory baseline, contract tests and D.2 upstream probe tests (`internal/harness/contract`) ran in
+    `task verify` while runtime sidecar packages (Phases 1–4) were planned (and subsequently landed in Tasks 1.1–4.2).

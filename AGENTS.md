@@ -50,7 +50,7 @@ task lint                # pinned revive + fixed-port guard and fixture test
 task vuln                # pinned govulncheck over all packages
 task test:unit           # unit tests once with -race at one CPU
 task test:repeat         # unit tests five times at one CPU without -race, shuffled
-task test:integration    # Docker-backed tests (-tags=integration), recording coverage/integration.tree
+task test:integration    # -tags=integration tests (live in-process NATS JetStream + graph-ingest), recording coverage/integration.tree
 task cover:check         # 80% statement coverage check over configured targets and tree fingerprint
 task spec:check          # strict OpenSpec validation; fails on a Hold: outside every task
 task spec:queue          # in-flight OpenSpec changes and their holds

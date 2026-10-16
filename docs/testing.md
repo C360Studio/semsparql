@@ -59,12 +59,13 @@ go test -race -count=1 -run '^TestBlankNodeID' ./irimap/
 
 ### Integration tests
 
-Integration tests live in `*_integration_test.go` files that start with `//go:build integration`, so `go test`
-without the tag does not build them. Real-broker NATS and `graph-ingest` parity tests (`TestScanPatternReaderParity` in
-`reader/nats_test.go`, `TestRunEndToEndWithLiveNATSAndGraphIngest` in `cmd/semsparql/main_test.go`, and
-`TestIntegrationDIEKMEndToEndSuite` / `TestPropIntegrationDIEKMLiveServerParity` in `server/diekm_integration_test.go`)
-start an in-process `nats-server/v2` with JetStream on an ephemeral port (`127.0.0.1:-1`) and wire a real
-`graphingest.CreateGraphIngest` component alongside the released SemVocab BFO/CCO Core and DIEKM packs.
+Integration tests live in `*_integration_test.go` files that start with `//go:build integration`
+(`TestIntegrationDIEKMEndToEndSuite` and `TestPropIntegrationDIEKMLiveServerParity` in
+`server/diekm_integration_test.go`), so `go test` without the tag does not build them. Package-local live-broker tests
+(`TestScanPatternReaderParity` in `reader/nats_test.go` and `TestRunEndToEndWithLiveNATSAndGraphIngest` in
+`cmd/semsparql/main_test.go`) live in ordinary `*_test.go` files so both `task test:unit` and `task test:integration`
+run them. All of these tests start an in-process `nats-server/v2` with JetStream on an ephemeral port (`127.0.0.1:-1`)
+and wire a real `graphingest.CreateGraphIngest` component alongside the released SemVocab BFO/CCO Core and DIEKM packs.
 
 ### Structural guards
 
@@ -95,8 +96,8 @@ Keep a copy of every file before you change it (`cp`), and record its SHA-256 ch
 check that the checksum matches:
 
 ```bash
-cp irimap/irimap.go "${TMPDIR:-/tmp}/irimap.go.bak" && shasum -a 256 irimap/irimap.go   # before
-cp "${TMPDIR:-/tmp}/irimap.go.bak" irimap/irimap.go && shasum -a 256 irimap/irimap.go   # after
+cp irimap/mapper.go "${TMPDIR:-/tmp}/mapper.go.bak" && shasum -a 256 irimap/mapper.go   # before
+cp "${TMPDIR:-/tmp}/mapper.go.bak" irimap/mapper.go && shasum -a 256 irimap/mapper.go   # after
 ```
 
 Do not use `git checkout --`, `git restore`, `git stash` or `git reset --hard`; they can discard other work in the
@@ -180,7 +181,8 @@ in issue #1 are:
 - **Folding equivalence:** a query over folded `ProjectionSpec` chains returns the same solutions as the unfolded query
   over a materialized graph (the reference model below).
 - **Reader parity:** `MemoryReader` and `NATSRPCReader` answer the same calls with the same entities on the same
-  graph. This one needs the integration fixture.
+  graph (`TestScanPatternReaderParity` in `reader/nats_test.go` and `TestPropIntegrationDIEKMLiveServerParity` in
+  `server/diekm_integration_test.go`).
 
 For both tools, the generator must be able to reach the boundary the rule is about. Being reachable is not the same as
 being exercised in a given run, so keep explicit examples for any boundary you claim the test covers.
