@@ -24,11 +24,13 @@ SPARQL 1.1 subset), task 2.2 (`sparql` plain-BGP `SELECT` and `ASK` planner and 
 `MemoryReader`), task 2.3 (`server` `GET`/`POST /sparql` endpoint, `SELECT`/`ASK` result negotiation and
 serialization, bounded input and query budgets, localhost/auth bind validation, and cancellation), task 3.1
 (`sparql` virtual `rdf:type` and `rdfs:subClassOf*` resolution, standalone registered-class closure evaluation,
-explicit/virtual graph-set merging, and startup `ValidateSuperclassClosure` checked by `server.New`), and task 3.2
-(`sparql` complete-chain `ProjectionSpec` folding and equivalent virtual-unfolded fallback evaluation) are in place.
-**Remaining product runtime components (`cmd/semsparql`, `sparql` graph construction (`3.3`), `server` entity JSON-LD
-and `POST /export` (`3.3`), and `reader.NATSRPCReader` (`4.1`)) do not exist in the tree yet**; do not describe
-unimplemented runtime components as present.
+explicit/virtual graph-set merging, and startup `ValidateSuperclassClosure` checked by `server.New`), task 3.2
+(`sparql` complete-chain `ProjectionSpec` folding and equivalent virtual-unfolded fallback evaluation), and task 3.3
+(`sparql` `CONSTRUCT`/`DESCRIBE`, `UnfoldEntity`, terminal datatype propagation, and loud invalid-triple validation;
+`server` `GET /entities/{entity_id}.jsonld` and `POST /export`; `docs/architecture.md` and
+`docs/shacl-compliance-gate.md`) are in place. **Remaining product runtime components (`cmd/semsparql` and
+`reader.NATSRPCReader` (`4.1`), plus live NATS/DIEKM end-to-end tests (`4.2`)) do not exist in the tree yet**; do not
+describe unimplemented runtime components as present.
 
 ## Commands
 
@@ -75,7 +77,7 @@ A new repo-wide or agent-conduct rule updates both this file and `.agents/rules-
 | --- | --- | --- |
 | `review` | Never write `ENTITY_STATES` or publish `graph.mutation.*`; zero mutation of SemEngine state | `dev`, `rev` (`BLOCKING`); issue #1 §2.1 |
 | `review` | Read only through `reader.GraphReader` over verbs declared in `graph.QueryVerbs()`; never spell a `graph.ingest.query.*` subject as a literal | `dev`, `rev`; `query-pattern` skill |
-| `verify+review` | IRI mapping and RDF graph output come from `semengine/vocabulary/export`; no second IRI mapping and no RDF graph writers here | `dev`, `rev`, `arch`; issue #1 §1, §2.2.1; `TestIRIMapperMatchesExporter` |
+| `verify+review` | IRI mapping and RDF graph output come from `semengine/vocabulary/export`; no second IRI mapping and no RDF graph writers here | `dev`, `rev`, `arch`; issue #1 §1, §2.2.1; `TestIRIMapperMatchesExporter`, `TestConstructUnfoldsReifiedGraphForSHACL`, `TestUnfoldTerminalDatatypePropagation`, `TestEntityJSONLDAndExportRoutes` |
 | `review` | A KV watch reader, if built, declares a memory ceiling (refusing to start above it) and freshness, and is a stopgap for graph-index, never a competing index | `dev`, `rev`, `arch`; issue #1 §2.1 |
 | `verify+review` | SemEngine and SemVocab are pinned to released tags: no `replace`, fork, local copy, or pseudo-version | `protocol` § Upstream boundary; `rev`; `task tidy:check`; `TestPinnedDependencies` |
 | `review` | An upstream gap is filed on the upstream repository and the dependent task carries `Hold:` naming it; never worked around here | `protocol` § Upstream boundary; `arch` |
@@ -96,8 +98,8 @@ A new repo-wide or agent-conduct rule updates both this file and `.agents/rules-
 
 | Gate | Rule | Where |
 | --- | --- | --- |
-| `verify+review` | Entity IDs, patterns and prefixes pass SemEngine's shared validators at entry, before any request | `dev` § Semantic identity; `rev`; `TestIRIMapperRoundTrip`, `FuzzIRIToEntityID`, `TestMemoryReaderInvalidInput`, `TestMemoryReaderEmptySentinelDistinction`, `FuzzMemoryReaderSelectors` |
-| `verify+review` | Sort and deduplicate complete entity-ID and RDF-term sets before a limit; SPARQL solutions keep duplicates unless `DISTINCT`/`REDUCED` and are ordered deterministically before `LIMIT`/`OFFSET` | `dev`, `rev`; `TestMemoryReaderDeterministicIDSets`, `TestPropMemoryReaderPatternAndPrefix`, `TestLookupByIRIMultiMatchUnion`, `TestSelectAndAskExecution`, `TestPropSelectExecutionMatchesReferenceModel`, `TestVirtualRDFTypeAndSubclassResolution`, `TestPropVirtualTypeAndSubClassClosure`, `TestBGPFoldingCollapsesDIEKMChains`, `TestPropBGPFoldingEquivalence` |
+| `verify+review` | Entity IDs, patterns and prefixes pass SemEngine's shared validators at entry, before any request | `dev` § Semantic identity; `rev`; `TestIRIMapperRoundTrip`, `FuzzIRIToEntityID`, `TestMemoryReaderInvalidInput`, `TestMemoryReaderEmptySentinelDistinction`, `FuzzMemoryReaderSelectors`, `TestEntityJSONLDAndExportRoutes`, `FuzzExportHTTPRequest` |
+| `verify+review` | Sort and deduplicate complete entity-ID and RDF-term sets before a limit; SPARQL solutions keep duplicates unless `DISTINCT`/`REDUCED` and are ordered deterministically before `LIMIT`/`OFFSET` | `dev`, `rev`; `TestMemoryReaderDeterministicIDSets`, `TestPropMemoryReaderPatternAndPrefix`, `TestLookupByIRIMultiMatchUnion`, `TestSelectAndAskExecution`, `TestPropSelectExecutionMatchesReferenceModel`, `TestVirtualRDFTypeAndSubclassResolution`, `TestPropVirtualTypeAndSubClassClosure`, `TestBGPFoldingCollapsesDIEKMChains`, `TestPropBGPFoldingEquivalence`, `TestConstructUnfoldsReifiedGraphForSHACL`, `TestDescribeOutgoingEntityCBDAndInvalidTripleGuard`, `TestPropUnfoldAndConstructGraphEquivalence` |
 | `review` | Never report partial replay, index or result state as ready or complete | `dev`, `rev` |
 | `verify+review` | Timeout, result cap and scan budget return a deterministic error, never silent partial results, unless the client opts into truncation; unconstrained `?s ?p ?o` is stopped by the scan budget | `dev`, `rev` § Read-only boundary; issue #1 §2.6; `TestMemoryReaderBudgetAwareScans`, `TestQueryLimits` |
 | `verify+review` | Out-of-scope SPARQL syntax returns a 400 naming the feature | `dev`, `rev`; issue #1 §2.5; `TestUnsupportedFeatureErrors` |
@@ -112,8 +114,8 @@ A new repo-wide or agent-conduct rule updates both this file and `.agents/rules-
 | `verify+review` | No test calls `Skip`/`Skipf`/`SkipNow`; no test file carries a build tag other than `integration` | `dev`, `rev`; `testing`; `TestNoSkippedTests`, `TestNoHiddenTests` |
 | `verify+review` | Test cleanup never stops, closes, or terminates under an unbounded context | `dev`, `rev`; `testing`; `task cleanup-roots:check` (`scripts/cleanup-roots-check.sh`) |
 | `review` | Tests use an independent oracle and are shown able to fail | `dev`, `rev`; `testing` |
-| `verify+review` | Every surface that parses external bytes or strings (SPARQL text, IRIs, entity IDs, HTTP parameters) ships a `Fuzz*` target with a seed corpus of accepted and rejected classes | `dev`, `rev`; `testing`; `FuzzIRIToEntityID`, `FuzzMemoryReaderSelectors`, `FuzzParseSPARQL`, `FuzzSPARQLHTTPRequest` |
-| `verify+review` | Changes with interacting inputs, a stated law, or order-dependent history record whether generated checks are used; Rapid runs record seed and checks completed; histories check against a reference model | `dev`, `rev`; `testing`; `TestPropIRIMapperRoundTrip`, `TestPropMemoryReaderPatternAndPrefix`, `TestPropParseSPARQLGeneratedQueries`, `TestPropSelectExecutionMatchesReferenceModel`, `TestPropVirtualTypeAndSubClassClosure`, `TestPropBGPFoldingEquivalence` |
+| `verify+review` | Every surface that parses external bytes or strings (SPARQL text, IRIs, entity IDs, HTTP parameters) ships a `Fuzz*` target with a seed corpus of accepted and rejected classes | `dev`, `rev`; `testing`; `FuzzIRIToEntityID`, `FuzzMemoryReaderSelectors`, `FuzzParseSPARQL`, `FuzzSPARQLHTTPRequest`, `FuzzExportHTTPRequest` |
+| `verify+review` | Changes with interacting inputs, a stated law, or order-dependent history record whether generated checks are used; Rapid runs record seed and checks completed; histories check against a reference model | `dev`, `rev`; `testing`; `TestPropIRIMapperRoundTrip`, `TestPropMemoryReaderPatternAndPrefix`, `TestPropParseSPARQLGeneratedQueries`, `TestPropSelectExecutionMatchesReferenceModel`, `TestPropVirtualTypeAndSubClassClosure`, `TestPropBGPFoldingEquivalence`, `TestPropUnfoldAndConstructGraphEquivalence` |
 | `review` | Mutation checks report survivors/inconclusive runs as such; in-tree wrong changes use a `cp` backup and verified SHA-256 restore | `dev`, `rev`; `testing` |
 | `review` | Claims about NATS keys, filters and query verbs are proven against a real NATS server and graph-ingest, not arithmetic | `dev`, `rev` |
 | `review` | Never run a git command that can discard working-tree state (`checkout --`, `restore`, `stash`, `clean`, `reset --hard`) | `dev`, `rev`, `arch` |

@@ -8,6 +8,9 @@ import (
 	"io"
 	"strings"
 
+	"github.com/c360studio/semengine/message"
+	"github.com/c360studio/semengine/vocabulary"
+	"github.com/c360studio/semengine/vocabulary/export"
 	"github.com/c360studio/semsparql/sparql"
 )
 
@@ -29,6 +32,34 @@ func WriteSelectAskResult(w io.Writer, res *sparql.Result, format ResultFormat) 
 	default:
 		return fmt.Errorf("server: unsupported SELECT/ASK result format %v", format)
 	}
+}
+
+// WriteGraphResult validates that every triple in triples renders to a
+// non-empty N-Triples statement (failing loudly if export.Serialize would
+// silently omit any triple) and serializes the graph in the negotiated RDF
+// format (Turtle, N-Triples, or JSON-LD) via semengine/vocabulary/export.
+func WriteGraphResult(w io.Writer, triples []message.Triple, format ResultFormat, baseIRI ...string) error {
+	var expFormat export.Format
+	switch format {
+	case FormatTurtle:
+		expFormat = export.Turtle
+	case FormatNTriples:
+		expFormat = export.NTriples
+	case FormatJSONLD:
+		expFormat = export.JSONLD
+	default:
+		return fmt.Errorf("server: unsupported RDF graph result format %v", format)
+	}
+
+	base := vocabulary.SemEngineBase
+	if len(baseIRI) > 0 && strings.TrimSpace(baseIRI[0]) != "" {
+		base = baseIRI[0]
+	}
+
+	if err := sparql.ValidateGraphTriples(triples, base); err != nil {
+		return err
+	}
+	return export.Serialize(w, triples, expFormat, sparql.ExportOptions(base)...)
 }
 
 type jsonResultTerm struct {

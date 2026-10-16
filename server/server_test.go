@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -25,6 +26,8 @@ import (
 	"github.com/c360studio/semsparql/irimap"
 	"github.com/c360studio/semsparql/reader"
 	"github.com/c360studio/semsparql/sparql"
+	"github.com/c360studio/semvocab/packs"
+	"github.com/c360studio/semvocab/packs/diekm"
 )
 
 const testBaseIRI = "https://semengine.local"
@@ -306,6 +309,52 @@ func TestSPARQL11ProtocolConformance(t *testing.T) {
 				var parsed sparqlXMLResponse
 				if err := xml.Unmarshal(baseline, &parsed); err != nil || parsed.Boolean == nil || !*parsed.Boolean {
 					t.Fatalf("ASK XML = %+v, err = %v", parsed, err)
+				}
+			}
+		}
+	})
+
+	t.Run("CONSTRUCT and DESCRIBE equivalent results across transports in Turtle, N-Triples, and JSON-LD", func(t *testing.T) {
+		constructQuery := `
+			PREFIX ex: <https://example.org/onto#>
+			CONSTRUCT { ?s ex:callsign ?cs ; ex:priority ?prio }
+			WHERE { ?s ex:callsign ?cs ; ex:priority ?prio }
+		`
+		describeQuery := `DESCRIBE <https://semengine.local/entities/c360/ops/uas1/intel/platform/alpha>`
+		graphFormats := []struct {
+			accept   string
+			wantMime string
+		}{
+			{accept: "", wantMime: MediaTypeTurtle},
+			{accept: MediaTypeTurtle, wantMime: MediaTypeTurtle},
+			{accept: MediaTypeNTriples, wantMime: MediaTypeNTriples},
+			{accept: MediaTypeJSONLD, wantMime: MediaTypeJSONLD},
+		}
+		for _, qSpec := range []struct {
+			name  string
+			query string
+		}{
+			{name: "CONSTRUCT", query: constructQuery},
+			{name: "DESCRIBE", query: describeQuery},
+		} {
+			for _, fmtSpec := range graphFormats {
+				var baseline []byte
+				for _, tr := range transports {
+					resp, body := sendRequest(t, tr, qSpec.query, fmtSpec.accept)
+					if resp.StatusCode != http.StatusOK {
+						t.Fatalf("%s %s (%s) status = %d, want 200: %s", qSpec.name, tr, fmtSpec.accept, resp.StatusCode, string(body))
+					}
+					if !strings.HasPrefix(resp.Header.Get("Content-Type"), fmtSpec.wantMime) {
+						t.Fatalf("%s %s (%s) Content-Type = %q, want prefix %q", qSpec.name, tr, fmtSpec.accept, resp.Header.Get("Content-Type"), fmtSpec.wantMime)
+					}
+					if !strings.Contains(string(body), "ALPHA-1") {
+						t.Fatalf("%s %s (%s) missing ALPHA-1 in body:\n%s", qSpec.name, tr, fmtSpec.accept, string(body))
+					}
+					if baseline == nil {
+						baseline = body
+					} else if string(body) != string(baseline) {
+						t.Fatalf("%s %s (%s) body mismatch across transports", qSpec.name, tr, fmtSpec.accept)
+					}
 				}
 			}
 		}
@@ -625,6 +674,96 @@ func TestQueryLimits(t *testing.T) {
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusGatewayTimeout || !strings.Contains(string(body), "query_timeout") {
 			t.Fatalf("status=%d body=%q, want 504 query_timeout", resp.StatusCode, string(body))
+		}
+	})
+
+	t.Run("CONSTRUCT and POST /export enforce MaxResults on deduplicated output triples and 256 KiB export body limit", func(t *testing.T) {
+		srv, err := New(mr, Config{
+			BaseIRI:         testBaseIRI,
+			MaxResults:      3,
+			MaxScanEntities: 100,
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		ts := httptest.NewServer(srv.Handler())
+		defer ts.Close()
+
+		constructQuery := `PREFIX ex: <https://example.org/onto#> CONSTRUCT { ?s ex:callsign ?cs } WHERE { ?s ex:callsign ?cs }`
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/sparql", strings.NewReader(constructQuery))
+		req.Header.Set("Content-Type", "application/sparql-query")
+		req.Header.Set("Accept", MediaTypeNTriples)
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("Do CONSTRUCT default: %v", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(string(body), "result_limit_exceeded") {
+			t.Fatalf("CONSTRUCT default status=%d body=%q, want 422 result_limit_exceeded", resp.StatusCode, string(body))
+		}
+
+		reqTrunc, _ := http.NewRequest(http.MethodPost, ts.URL+"/sparql", strings.NewReader(constructQuery))
+		reqTrunc.Header.Set("Content-Type", "application/sparql-query")
+		reqTrunc.Header.Set("Accept", MediaTypeNTriples)
+		reqTrunc.Header.Set(HeaderAllowTruncation, "true")
+		respTrunc, err := ts.Client().Do(reqTrunc)
+		if err != nil {
+			t.Fatalf("Do CONSTRUCT opt-in: %v", err)
+		}
+		bodyTrunc, _ := io.ReadAll(respTrunc.Body)
+		respTrunc.Body.Close()
+		if respTrunc.StatusCode != http.StatusOK || respTrunc.Header.Get(HeaderTruncated) != "true" || respTrunc.Header.Get(HeaderTruncationReason) != "result_limit" {
+			t.Fatalf("CONSTRUCT opt-in status=%d Truncated=%q Reason=%q", respTrunc.StatusCode, respTrunc.Header.Get(HeaderTruncated), respTrunc.Header.Get(HeaderTruncationReason))
+		}
+		lines := strings.Split(strings.TrimSpace(string(bodyTrunc)), "\n")
+		if len(lines) != 3 {
+			t.Fatalf("CONSTRUCT truncated N-Triples lines = %d, want 3:\n%s", len(lines), string(bodyTrunc))
+		}
+
+		// POST /export with prefix exceeding MaxResults=3 -> 422 by default, 200 with truncation header on opt-in.
+		exportBody := `{"prefix":"c360.ops.uas1.intel.platform"}`
+		reqExp, _ := http.NewRequest(http.MethodPost, ts.URL+"/export", strings.NewReader(exportBody))
+		reqExp.Header.Set("Content-Type", "application/json")
+		reqExp.Header.Set("Accept", MediaTypeNTriples)
+		respExp, err := ts.Client().Do(reqExp)
+		if err != nil {
+			t.Fatalf("Do POST /export default: %v", err)
+		}
+		expOut, _ := io.ReadAll(respExp.Body)
+		respExp.Body.Close()
+		if respExp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(string(expOut), "result_limit_exceeded") {
+			t.Fatalf("POST /export default status=%d body=%q, want 422 result_limit_exceeded", respExp.StatusCode, string(expOut))
+		}
+
+		reqExpTrunc, _ := http.NewRequest(http.MethodPost, ts.URL+"/export", strings.NewReader(exportBody))
+		reqExpTrunc.Header.Set("Content-Type", "application/json")
+		reqExpTrunc.Header.Set("Accept", MediaTypeNTriples)
+		reqExpTrunc.Header.Set(HeaderAllowTruncation, "true")
+		respExpTrunc, err := ts.Client().Do(reqExpTrunc)
+		if err != nil {
+			t.Fatalf("Do POST /export opt-in: %v", err)
+		}
+		expTruncOut, _ := io.ReadAll(respExpTrunc.Body)
+		respExpTrunc.Body.Close()
+		if respExpTrunc.StatusCode != http.StatusOK || respExpTrunc.Header.Get(HeaderTruncated) != "true" || respExpTrunc.Header.Get(HeaderTruncationReason) != "result_limit" {
+			t.Fatalf("POST /export opt-in status=%d Truncated=%q Reason=%q", respExpTrunc.StatusCode, respExpTrunc.Header.Get(HeaderTruncated), respExpTrunc.Header.Get(HeaderTruncationReason))
+		}
+		if gotLines := strings.Split(strings.TrimSpace(string(expTruncOut)), "\n"); len(gotLines) != 3 {
+			t.Fatalf("POST /export truncated N-Triples lines = %d, want 3:\n%s", len(gotLines), string(expTruncOut))
+		}
+
+		// POST /export body > 256 KiB returns 413 Content Too Large.
+		bigConstruct := fmt.Sprintf(`{"construct":"CONSTRUCT WHERE { ?s <https://example.org/onto#callsign> \"%s\" }"}`, strings.Repeat("x", DefaultMaxExportBytes+1))
+		reqBig, _ := http.NewRequest(http.MethodPost, ts.URL+"/export", strings.NewReader(bigConstruct))
+		reqBig.Header.Set("Content-Type", "application/json")
+		respBig, err := ts.Client().Do(reqBig)
+		if err != nil {
+			t.Fatalf("Do POST /export oversized: %v", err)
+		}
+		respBig.Body.Close()
+		if respBig.StatusCode != http.StatusRequestEntityTooLarge {
+			t.Fatalf("POST /export oversized status = %d, want 413", respBig.StatusCode)
 		}
 	})
 }
@@ -1009,4 +1148,312 @@ func TestNegotiationSerializationAndServerEdgeCases(t *testing.T) {
 	if err := <-serveDone; err != nil {
 		t.Fatalf("Serve after Shutdown = %v, want nil", err)
 	}
+}
+
+func TestEntityJSONLDAndExportRoutes(t *testing.T) {
+	restore := vocabulary.SnapshotRegistry()
+	vocabulary.ClearRegistry()
+	defer restore()
+
+	if err := packs.RegisterBFOCCOCore(); err != nil {
+		t.Fatalf("RegisterBFOCCOCore: %v", err)
+	}
+	if err := diekm.Register(); err != nil {
+		t.Fatalf("diekm.Register: %v", err)
+	}
+	vocabulary.Register("c360.intel.callsign",
+		vocabulary.WithIRI("https://example.org/onto#callsign"),
+		vocabulary.WithDataType(vocabulary.DataTypeString))
+
+	const (
+		idAlpha = "c360.ops.uas1.intel.platform.alpha"
+		idBravo = "c360.ops.uas1.intel.platform.bravo"
+	)
+	mr, err := reader.NewMemoryReader(
+		graph.EntityState{
+			ID: idAlpha,
+			Triples: []message.Triple{
+				{Subject: idAlpha, Predicate: "c360.intel.callsign", Object: "ALPHA-1"},
+				{Subject: idAlpha, Predicate: "intel.role.assigned", Object: "ISR"},
+				{Subject: idAlpha, Predicate: "intel.measurement.altitude-m", Object: float64(1500.5)},
+			},
+		},
+		graph.EntityState{
+			ID: idBravo,
+			Triples: []message.Triple{
+				{Subject: idBravo, Predicate: "c360.intel.callsign", Object: "BRAVO-2"},
+				{Subject: idBravo, Predicate: "intel.role.assigned", Object: "Strike"},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewMemoryReader: %v", err)
+	}
+
+	srv, err := New(mr, Config{BaseIRI: testBaseIRI})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	t.Run("GET /entities/{entity_id}.jsonld returns unfolded JSON-LD and 400/404/405/406 on errors", func(t *testing.T) {
+		resp, err := ts.Client().Get(ts.URL + "/entities/" + idAlpha + ".jsonld")
+		if err != nil {
+			t.Fatalf("Get entity JSON-LD: %v", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", resp.StatusCode, string(body))
+		}
+		if !strings.HasPrefix(resp.Header.Get("Content-Type"), MediaTypeJSONLD) {
+			t.Fatalf("Content-Type = %q, want prefix %q", resp.Header.Get("Content-Type"), MediaTypeJSONLD)
+		}
+		bRole, err := irimap.BlankNodeID(idAlpha, "intel.role.assigned", `"ISR"`, 0)
+		if err != nil {
+			t.Fatalf("BlankNodeID: %v", err)
+		}
+		if !strings.Contains(string(body), bRole) || !strings.Contains(string(body), "IntelligencePlatform") || !strings.Contains(string(body), "1500.5") {
+			t.Fatalf("entity JSON-LD missing unfolded blank node, virtual rdf:type, or altitude:\n%s", string(body))
+		}
+
+		// 404 Not Found for valid 6-part entity ID that does not exist.
+		resp404, err := ts.Client().Get(ts.URL + "/entities/c360.ops.uas1.intel.platform.missing.jsonld")
+		if err != nil {
+			t.Fatalf("Get missing entity: %v", err)
+		}
+		resp404.Body.Close()
+		if resp404.StatusCode != http.StatusNotFound {
+			t.Fatalf("missing entity status = %d, want 404", resp404.StatusCode)
+		}
+
+		// 400 Bad Request for malformed entity IDs or missing .jsonld suffix.
+		for _, badPath := range []string{
+			"/entities/not-six-parts.jsonld",
+			"/entities/.jsonld",
+			"/entities/" + idAlpha,
+		} {
+			r, err := ts.Client().Get(ts.URL + badPath)
+			if err != nil {
+				t.Fatalf("Get(%s): %v", badPath, err)
+			}
+			r.Body.Close()
+			if r.StatusCode != http.StatusBadRequest {
+				t.Fatalf("Get(%s) status = %d, want 400", badPath, r.StatusCode)
+			}
+		}
+
+		// 406 Not Acceptable when Accept excludes application/ld+json.
+		req406, _ := http.NewRequest(http.MethodGet, ts.URL+"/entities/"+idAlpha+".jsonld", nil)
+		req406.Header.Set("Accept", MediaTypeTurtle)
+		resp406, err := ts.Client().Do(req406)
+		if err != nil {
+			t.Fatalf("Do 406: %v", err)
+		}
+		resp406.Body.Close()
+		if resp406.StatusCode != http.StatusNotAcceptable {
+			t.Fatalf("entity JSON-LD with Accept=text/turtle status = %d, want 406", resp406.StatusCode)
+		}
+
+		// 405 Method Not Allowed on POST.
+		req405, _ := http.NewRequest(http.MethodPost, ts.URL+"/entities/"+idAlpha+".jsonld", strings.NewReader("{}"))
+		resp405, err := ts.Client().Do(req405)
+		if err != nil {
+			t.Fatalf("Do 405: %v", err)
+		}
+		resp405.Body.Close()
+		if resp405.StatusCode != http.StatusMethodNotAllowed {
+			t.Fatalf("POST /entities/*.jsonld status = %d, want 405", resp405.StatusCode)
+		}
+	})
+
+	t.Run("POST /export supports prefix and construct selectors across Turtle, N-Triples, and JSON-LD and rejects GET /export.ttl", func(t *testing.T) {
+		selectors := []struct {
+			name string
+			body string
+		}{
+			{name: "1-part prefix", body: `{"prefix":"c360"}`},
+			{name: "2-part prefix", body: `{"prefix":"c360.ops"}`},
+			{name: "5-part prefix", body: `{"prefix":"c360.ops.uas1.intel.platform"}`},
+			{name: "6-part exact prefix", body: `{"prefix":"c360.ops.uas1.intel.platform.alpha"}`},
+			{name: "construct selector", body: `{"construct":"CONSTRUCT WHERE { ?s ?p ?o }"}`},
+		}
+		formats := []struct {
+			accept   string
+			wantMime string
+		}{
+			{accept: "", wantMime: MediaTypeTurtle},
+			{accept: MediaTypeTurtle, wantMime: MediaTypeTurtle},
+			{accept: MediaTypeNTriples, wantMime: MediaTypeNTriples},
+			{accept: MediaTypeJSONLD, wantMime: MediaTypeJSONLD},
+		}
+		for _, sel := range selectors {
+			for _, fmtSpec := range formats {
+				req, _ := http.NewRequest(http.MethodPost, ts.URL+"/export", strings.NewReader(sel.body))
+				req.Header.Set("Content-Type", "application/json; charset=utf-8")
+				if fmtSpec.accept != "" {
+					req.Header.Set("Accept", fmtSpec.accept)
+				}
+				resp, err := ts.Client().Do(req)
+				if err != nil {
+					t.Fatalf("POST /export (%s, %s): %v", sel.name, fmtSpec.accept, err)
+				}
+				out, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("POST /export (%s, %s) status = %d, want 200: %s", sel.name, fmtSpec.accept, resp.StatusCode, string(out))
+				}
+				if !strings.HasPrefix(resp.Header.Get("Content-Type"), fmtSpec.wantMime) {
+					t.Fatalf("POST /export (%s, %s) Content-Type = %q, want %q", sel.name, fmtSpec.accept, resp.Header.Get("Content-Type"), fmtSpec.wantMime)
+				}
+				if !strings.Contains(string(out), "ALPHA-1") || !strings.Contains(string(out), "1500.5") {
+					t.Fatalf("POST /export (%s, %s) missing unfolded triples:\n%s", sel.name, fmtSpec.accept, string(out))
+				}
+			}
+		}
+
+		// Missing 6-part exact entity prefix returns 200 OK with empty graph.
+		reqMissing, _ := http.NewRequest(http.MethodPost, ts.URL+"/export", strings.NewReader(`{"prefix":"c360.ops.uas1.intel.platform.missing"}`))
+		reqMissing.Header.Set("Content-Type", "application/json")
+		reqMissing.Header.Set("Accept", MediaTypeNTriples)
+		respMissing, err := ts.Client().Do(reqMissing)
+		if err != nil {
+			t.Fatalf("POST /export missing exact prefix: %v", err)
+		}
+		outMissing, _ := io.ReadAll(respMissing.Body)
+		respMissing.Body.Close()
+		if respMissing.StatusCode != http.StatusOK || strings.TrimSpace(string(outMissing)) != "" {
+			t.Fatalf("POST /export missing exact prefix status=%d body=%q, want 200 empty", respMissing.StatusCode, string(outMissing))
+		}
+
+		// GET /export.ttl is not registered (404 Not Found), and GET /export returns 405 Method Not Allowed.
+		respTTL, err := ts.Client().Get(ts.URL + "/export.ttl")
+		if err != nil {
+			t.Fatalf("Get /export.ttl: %v", err)
+		}
+		respTTL.Body.Close()
+		if respTTL.StatusCode != http.StatusNotFound {
+			t.Fatalf("GET /export.ttl status = %d, want 404", respTTL.StatusCode)
+		}
+
+		respGetExport, err := ts.Client().Get(ts.URL + "/export")
+		if err != nil {
+			t.Fatalf("Get /export: %v", err)
+		}
+		respGetExport.Body.Close()
+		if respGetExport.StatusCode != http.StatusMethodNotAllowed {
+			t.Fatalf("GET /export status = %d, want 405", respGetExport.StatusCode)
+		}
+
+		// Invalid POST /export requests -> 400 Bad Request or 406 Not Acceptable.
+		badExports := []struct {
+			name       string
+			ct         string
+			accept     string
+			body       string
+			wantStatus int
+		}{
+			{name: "wrong Content-Type", ct: "text/plain", body: `{"prefix":"c360.ops"}`, wantStatus: http.StatusBadRequest},
+			{name: "invalid JSON", ct: "application/json", body: `{not-json}`, wantStatus: http.StatusBadRequest},
+			{name: "trailing JSON token", ct: "application/json", body: `{"prefix":"c360.ops"} {"extra":1}`, wantStatus: http.StatusBadRequest},
+			{name: "unknown JSON field", ct: "application/json", body: `{"unknown":"x"}`, wantStatus: http.StatusBadRequest},
+			{name: "empty selector object", ct: "application/json", body: `{}`, wantStatus: http.StatusBadRequest},
+			{name: "both prefix and construct", ct: "application/json", body: `{"prefix":"c360.ops","construct":"CONSTRUCT WHERE { ?s ?p ?o }"}`, wantStatus: http.StatusBadRequest},
+			{name: "wildcard in prefix", ct: "application/json", body: `{"prefix":"c360.ops.*"}`, wantStatus: http.StatusBadRequest},
+			{name: "trailing dot in prefix", ct: "application/json", body: `{"prefix":"c360.ops."}`, wantStatus: http.StatusBadRequest},
+			{name: "7-part prefix", ct: "application/json", body: `{"prefix":"a.b.c.d.e.f.g"}`, wantStatus: http.StatusBadRequest},
+			{name: "empty segment in prefix", ct: "application/json", body: `{"prefix":"c360..ops"}`, wantStatus: http.StatusBadRequest},
+			{name: "SELECT in construct field", ct: "application/json", body: `{"construct":"SELECT ?s WHERE { ?s ?p ?o }"}`, wantStatus: http.StatusBadRequest},
+			{name: "DESCRIBE in construct field", ct: "application/json", body: `{"construct":"DESCRIBE <https://example.org/x>"}`, wantStatus: http.StatusBadRequest},
+			{name: "syntax error in construct field", ct: "application/json", body: `{"construct":"CONSTRUCT WHERE { ?s ?p"}`, wantStatus: http.StatusBadRequest},
+			{name: "incompatible Accept on /export", ct: "application/json", accept: MediaTypeSPARQLJSON, body: `{"prefix":"c360.ops"}`, wantStatus: http.StatusNotAcceptable},
+		}
+		for _, tc := range badExports {
+			req, _ := http.NewRequest(http.MethodPost, ts.URL+"/export", strings.NewReader(tc.body))
+			if tc.ct != "" {
+				req.Header.Set("Content-Type", tc.ct)
+			}
+			if tc.accept != "" {
+				req.Header.Set("Accept", tc.accept)
+			}
+			r, err := ts.Client().Do(req)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			b, _ := io.ReadAll(r.Body)
+			r.Body.Close()
+			if r.StatusCode != tc.wantStatus {
+				t.Fatalf("%s: status = %d, want %d (%s)", tc.name, r.StatusCode, tc.wantStatus, string(b))
+			}
+		}
+	})
+
+	t.Run("WriteGraphResult fails loudly on invalid triples or unsupported format", func(t *testing.T) {
+		err := WriteGraphResult(io.Discard, []message.Triple{{Subject: "", Predicate: "c360.intel.callsign", Object: "x"}}, FormatTurtle, testBaseIRI)
+		if !errors.Is(err, sparql.ErrInvalidOutputTriple) {
+			t.Fatalf("WriteGraphResult(empty subject) = %v, want ErrInvalidOutputTriple", err)
+		}
+		errNaN := WriteGraphResult(io.Discard, []message.Triple{{Subject: idAlpha, Predicate: "intel.measurement.altitude-m", Object: math.NaN()}}, FormatNTriples, testBaseIRI)
+		if !errors.Is(errNaN, sparql.ErrInvalidOutputTriple) {
+			t.Fatalf("WriteGraphResult(NaN) = %v, want ErrInvalidOutputTriple", errNaN)
+		}
+		if err := WriteGraphResult(io.Discard, nil, FormatSPARQLJSON, testBaseIRI); err == nil {
+			t.Fatal("WriteGraphResult(FormatSPARQLJSON) = nil, want error")
+		}
+	})
+}
+
+func FuzzExportHTTPRequest(f *testing.F) {
+	seeds := []struct {
+		method      string
+		path        string
+		contentType string
+		body        string
+		accept      string
+	}{
+		{http.MethodPost, "/export", "application/json", `{"prefix":"c360.ops.uas1"}`, "text/turtle"},
+		{http.MethodPost, "/export", "application/json", `{"construct":"CONSTRUCT WHERE { ?s ?p ?o }"}`, "application/n-triples"},
+		{http.MethodPost, "/export", "application/json", `{"prefix":"c360.ops.uas1.intel.platform.alpha"}`, "application/ld+json"},
+		{http.MethodPost, "/export", "application/json", `{"prefix":"c360.*"}`, "*/*"},
+		{http.MethodGet, "/entities/c360.ops.uas1.intel.platform.alpha.jsonld", "", "", "application/ld+json"},
+		{http.MethodGet, "/entities/invalid.jsonld", "", "", "*/*"},
+	}
+	for _, s := range seeds {
+		f.Add(s.method, s.path, s.contentType, s.body, s.accept)
+	}
+
+	mr, err := reader.NewMemoryReader()
+	if err != nil {
+		f.Fatalf("NewMemoryReader: %v", err)
+	}
+	srv, err := New(mr, Config{BaseIRI: testBaseIRI})
+	if err != nil {
+		f.Fatalf("New: %v", err)
+	}
+	handler := srv.Handler()
+
+	f.Fuzz(func(t *testing.T, method, path, contentType, body, accept string) {
+		switch method {
+		case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete:
+		default:
+			method = http.MethodPost
+		}
+		if !strings.HasPrefix(path, "/") {
+			path = "/export"
+		}
+		req := httptest.NewRequest(method, "/export", strings.NewReader(body))
+		req.URL.Path = path
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		if accept != "" {
+			req.Header.Set("Accept", accept)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code == 0 {
+			t.Fatal("recorder status code is 0")
+		}
+	})
 }

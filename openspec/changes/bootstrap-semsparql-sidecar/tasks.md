@@ -71,7 +71,7 @@ tasks `3.3`–`4.2` proceed in phase order.
   TestBGPFoldingCollapsesDIEKMChains plus Rapid equivalence against an independently materialized unfolded graph,
   including partial chains, missing type constraints, projected intermediates, extra constraints/FILTERs,
   ambiguity, variable predicates and multi-valued sources. Preserve solution multiplicity.
-- [ ] 3.3 Add CONSTRUCT/DESCRIBE (outgoing entity CBD + virtual rdf:type + unfolded blank-node chains, D.1d),
+- [x] 3.3 Add CONSTRUCT/DESCRIBE (outgoing entity CBD + virtual rdf:type + unfolded blank-node chains, D.1d),
   unfolding, entity JSON-LD, POST /export (256 KiB max body, D.1b), architecture documentation and the external
   SHACL guide. Prove TestConstructUnfoldsReifiedGraphForSHACL and TestUnfoldTerminalDatatypePropagation across
   Turtle/N-Triples/JSON-LD; extend protocol tests to graph formats, invalid/missing IDs and selection bodies.

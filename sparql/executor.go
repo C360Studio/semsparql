@@ -82,6 +82,7 @@ type Result struct {
 	Variables        []string
 	Solutions        []Solution
 	AskResult        bool
+	Triples          []message.Triple
 	EntitiesScanned  int
 	Truncated        bool
 	TruncationReason string
@@ -234,8 +235,12 @@ func (e *Executor) Execute(ctx context.Context, q *Query, opts ...EvalOption) (*
 		return state.execSelect(q)
 	case QueryAsk:
 		return state.execAsk(q)
+	case QueryConstruct:
+		return state.execConstruct(q)
+	case QueryDescribe:
+		return state.execDescribe(q)
 	default:
-		return nil, fmt.Errorf("sparql: query form %v not supported in SELECT/ASK executor", q.Form)
+		return nil, fmt.Errorf("sparql: unsupported query form %v", q.Form)
 	}
 }
 
@@ -1545,6 +1550,34 @@ func (s *execState) entityToRDFTriples(entity *graph.EntityState, filterPredicat
 	return out, nil
 }
 
+// normalizeSourceTripleDatatype maps explicit "iri" / "@id" or prefixed/full
+// XSD/RDF datatype declarations onto tr.Datatype while leaving SemEngine's
+// pragmatic DataType constants ("float", "int", "bool", "string", "datetime",
+// "json", "entity_id") untouched so vocabulary/export's classifyByDeclaredDataType
+// handles them without emitting relative datatype IRIs.
+func normalizeSourceTripleDatatype(tr message.Triple) message.Triple {
+	if tr.Datatype != "" {
+		if tr.Datatype == "iri" {
+			tr.Datatype = message.EntityReferenceDatatype
+		}
+		return tr
+	}
+	meta := vocabulary.GetPredicateMetadata(tr.Predicate)
+	if meta == nil || meta.DataType == "" {
+		return tr
+	}
+	switch {
+	case meta.DataType == "iri" || meta.DataType == message.EntityReferenceDatatype:
+		tr.Datatype = message.EntityReferenceDatatype
+	case strings.HasPrefix(meta.DataType, "xsd:") ||
+		strings.HasPrefix(meta.DataType, "rdf:") ||
+		strings.HasPrefix(meta.DataType, "http://") ||
+		strings.HasPrefix(meta.DataType, "https://"):
+		tr.Datatype = meta.DataType
+	}
+	return tr
+}
+
 // resolveTripleTerms delegates predicate IRI resolution and object RDF
 // classification to semengine/vocabulary/export via single-triple N-Triples
 // serialization, returning the predicate Term, object Term, and canonical
@@ -1553,11 +1586,12 @@ func resolveTripleTerms(tr message.Triple, baseIRI string) (predTerm, objTerm Te
 	if strings.TrimSpace(tr.Predicate) == "" || tr.Object == nil {
 		return Term{}, Term{}, "", false, nil
 	}
+	normTr := normalizeSourceTripleDatatype(tr)
 	probe := message.Triple{
 		Subject:   "_:s",
-		Predicate: tr.Predicate,
-		Object:    tr.Object,
-		Datatype:  tr.Datatype,
+		Predicate: normTr.Predicate,
+		Object:    normTr.Object,
+		Datatype:  normTr.Datatype,
 	}
 	line, err := export.SerializeToString([]message.Triple{probe}, export.NTriples, export.WithBaseIRI(baseIRI))
 	if err != nil {

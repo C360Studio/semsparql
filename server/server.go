@@ -17,7 +17,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/c360studio/semengine/message"
 	"github.com/c360studio/semengine/pkg/errs"
+	semtypes "github.com/c360studio/semengine/pkg/types"
+	"github.com/c360studio/semengine/vocabulary/export"
 	"github.com/c360studio/semsparql/irimap"
 	"github.com/c360studio/semsparql/reader"
 	"github.com/c360studio/semsparql/sparql"
@@ -41,6 +44,9 @@ var (
 
 	// ErrQueryTooLarge indicates a SPARQL query exceeded MaxQueryBytes (HTTP 413 Content Too Large, D.1b).
 	ErrQueryTooLarge = errors.New("server: SPARQL query exceeds maximum byte limit")
+
+	// ErrExportBodyTooLarge indicates a POST /export request body exceeded MaxExportBytes (HTTP 413 Content Too Large, D.1b).
+	ErrExportBodyTooLarge = errors.New("server: export request body exceeds maximum byte limit")
 )
 
 // Config configures the SPARQL 1.1 HTTP Server.
@@ -53,6 +59,7 @@ type Config struct {
 	MaxResults      int
 	MaxScanEntities int
 	MaxQueryBytes   int
+	MaxExportBytes  int
 }
 
 // ValidateConfig verifies that the bind address is well-formed and that any
@@ -95,6 +102,7 @@ func hasAuthConfigured(cfg Config) bool {
 // Server serves the read-only SPARQL 1.1 Protocol and RDF export endpoints.
 type Server struct {
 	cfg      Config
+	reader   reader.GraphReader
 	mapper   *irimap.Mapper
 	executor *sparql.Executor
 	mux      *http.ServeMux
@@ -114,6 +122,9 @@ func New(r reader.GraphReader, cfg Config) (*Server, error) {
 	if cfg.MaxQueryBytes <= 0 {
 		cfg.MaxQueryBytes = DefaultMaxQueryBytes
 	}
+	if cfg.MaxExportBytes <= 0 {
+		cfg.MaxExportBytes = DefaultMaxExportBytes
+	}
 	if err := ValidateConfig(cfg); err != nil {
 		return nil, err
 	}
@@ -131,11 +142,14 @@ func New(r reader.GraphReader, cfg Config) (*Server, error) {
 
 	s := &Server{
 		cfg:      cfg,
+		reader:   r,
 		mapper:   mapper,
 		executor: exec,
 		mux:      http.NewServeMux(),
 	}
 	s.mux.HandleFunc("/sparql", s.handleSPARQL)
+	s.mux.HandleFunc("/entities/", s.handleEntityJSONLD)
+	s.mux.HandleFunc("/export", s.handleExport)
 	return s, nil
 }
 
@@ -246,8 +260,351 @@ func (s *Server) handleSPARQL(w http.ResponseWriter, r *http.Request) {
 	// Buffer the serialized response before writing HTTP 200 headers so any
 	// serialization failure fails closed rather than emitting a partial body.
 	var buf bytes.Buffer
-	if err := WriteSelectAskResult(&buf, res, format); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "serialization_error", err.Error())
+	switch res.Form {
+	case sparql.QueryConstruct, sparql.QueryDescribe:
+		if err := WriteGraphResult(&buf, res.Triples, format, s.mapper.BaseIRI()); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, classifyErrorCode(err, "serialization_error"), err.Error())
+			return
+		}
+	default:
+		if err := WriteSelectAskResult(&buf, res, format); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "serialization_error", err.Error())
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", format.ContentType())
+	if res.Truncated {
+		w.Header().Set(HeaderTruncated, "true")
+		if res.TruncationReason != "" {
+			w.Header().Set(HeaderTruncationReason, res.TruncationReason)
+		}
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(buf.Bytes())
+}
+
+func (s *Server) handleEntityJSONLD(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", fmt.Sprintf("method %s not allowed on %s", r.Method, r.URL.Path))
+		return
+	}
+
+	const prefix = "/entities/"
+	const suffix = ".jsonld"
+	if !strings.HasPrefix(r.URL.Path, prefix) || !strings.HasSuffix(r.URL.Path, suffix) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_entity_id", "path must match /entities/{entity_id}.jsonld")
+		return
+	}
+	entityID := r.URL.Path[len(prefix) : len(r.URL.Path)-len(suffix)]
+	if entityID == "" || strings.Contains(entityID, "/") {
+		writeJSONError(w, http.StatusBadRequest, "invalid_entity_id", fmt.Sprintf("invalid entity ID %q", entityID))
+		return
+	}
+	if _, err := semtypes.ParseEntityID(entityID); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_entity_id", err.Error())
+		return
+	}
+
+	if accept := strings.TrimSpace(r.Header.Get("Accept")); accept != "" {
+		if !acceptsJSONLD(accept) {
+			writeJSONError(w, http.StatusNotAcceptable, "not_acceptable", fmt.Sprintf("Accept %q is incompatible with application/ld+json", accept))
+			return
+		}
+	}
+
+	timeout := s.cfg.QueryTimeout
+	if timeout <= 0 {
+		timeout = sparql.DefaultQueryTimeout
+	}
+	queryCtx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
+	ent, err := s.reader.GetEntity(queryCtx, entityID)
+	if err != nil {
+		if errors.Is(err, reader.ErrEntityNotFound) {
+			writeJSONError(w, http.StatusNotFound, "entity_not_found", err.Error())
+			return
+		}
+		s.writeExecutionError(w, err)
+		return
+	}
+
+	triples, err := sparql.UnfoldEntity(ent, s.mapper.BaseIRI())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, classifyErrorCode(err, "serialization_error"), err.Error())
+		return
+	}
+
+	allowTruncation := strings.EqualFold(strings.TrimSpace(r.Header.Get(HeaderAllowTruncation)), "true")
+	maxResults := s.cfg.MaxResults
+	if maxResults <= 0 {
+		maxResults = sparql.DefaultMaxResults
+	}
+	truncated := false
+	truncReason := ""
+	if len(triples) > maxResults {
+		if !allowTruncation {
+			writeJSONError(w, http.StatusUnprocessableEntity, sparql.ErrorCodeResultLimitExceeded,
+				fmt.Sprintf("server: entity graph (%d triples) exceeds max_results limit of %d", len(triples), maxResults))
+			return
+		}
+		triples = triples[:maxResults]
+		truncated = true
+		truncReason = sparql.TruncationReasonResultLimit
+	}
+
+	var buf bytes.Buffer
+	if err := WriteGraphResult(&buf, triples, FormatJSONLD, s.mapper.BaseIRI()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, classifyErrorCode(err, "serialization_error"), err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", FormatJSONLD.ContentType())
+	if truncated {
+		w.Header().Set(HeaderTruncated, "true")
+		w.Header().Set(HeaderTruncationReason, truncReason)
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(buf.Bytes())
+}
+
+func acceptsJSONLD(acceptHeader string) bool {
+	clauses, err := parseAcceptHeader(acceptHeader)
+	if err != nil {
+		return false
+	}
+	for _, c := range clauses {
+		if c.q <= 0 {
+			continue
+		}
+		switch c.mediaType {
+		case MediaTypeJSONLD, "application/json", "application/*", "*/*":
+			return true
+		}
+	}
+	return false
+}
+
+type exportSelectorRequest struct {
+	Prefix    *string `json:"prefix"`
+	Construct *string `json:"construct"`
+}
+
+func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", fmt.Sprintf("method %s not allowed on /export", r.Method))
+		return
+	}
+	if r.URL.RawQuery != "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "POST /export does not accept URL query parameters")
+		return
+	}
+
+	if ctHeader := strings.TrimSpace(r.Header.Get("Content-Type")); ctHeader != "" {
+		mt, _, err := mime.ParseMediaType(ctHeader)
+		if err != nil || !strings.EqualFold(mt, "application/json") {
+			writeJSONError(w, http.StatusBadRequest, "invalid_content_type", fmt.Sprintf("POST /export requires Content-Type application/json, got %q", ctHeader))
+			return
+		}
+	}
+
+	maxExportBytes := s.cfg.MaxExportBytes
+	if maxExportBytes <= 0 {
+		maxExportBytes = DefaultMaxExportBytes
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, int64(maxExportBytes)+1))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("read export body: %w", err).Error())
+		return
+	}
+	if len(body) > maxExportBytes {
+		writeJSONError(w, http.StatusRequestEntityTooLarge, "export_body_too_large", ErrExportBodyTooLarge.Error())
+		return
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "invalid_export_selector", "empty export request body")
+		return
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	var sel exportSelectorRequest
+	if err := dec.Decode(&sel); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_export_selector", fmt.Errorf("invalid JSON export selector: %w", err).Error())
+		return
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		writeJSONError(w, http.StatusBadRequest, "invalid_export_selector", "unexpected trailing JSON content in export request body")
+		return
+	}
+
+	hasPrefix := sel.Prefix != nil
+	hasConstruct := sel.Construct != nil
+	if hasPrefix == hasConstruct {
+		writeJSONError(w, http.StatusBadRequest, "invalid_export_selector",
+			"POST /export requires exactly one of \"prefix\" or \"construct\"")
+		return
+	}
+
+	format, err := NegotiateAccept(sparql.QueryConstruct, r.Header.Get("Accept"))
+	if err != nil {
+		writeJSONError(w, http.StatusNotAcceptable, "not_acceptable", err.Error())
+		return
+	}
+
+	allowTruncation := strings.EqualFold(strings.TrimSpace(r.Header.Get(HeaderAllowTruncation)), "true")
+
+	if hasPrefix {
+		s.handlePrefixExport(w, r, *sel.Prefix, format, allowTruncation)
+		return
+	}
+	s.handleConstructExport(w, r, *sel.Construct, format, allowTruncation)
+}
+
+func (s *Server) handlePrefixExport(
+	w http.ResponseWriter,
+	r *http.Request,
+	prefix string,
+	format ResultFormat,
+	allowTruncation bool,
+) {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_prefix", "export \"prefix\" selector must not be empty")
+		return
+	}
+	if err := semtypes.ValidateEntityIDPrefix(prefix); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_prefix", err.Error())
+		return
+	}
+
+	timeout := s.cfg.QueryTimeout
+	if timeout <= 0 {
+		timeout = sparql.DefaultQueryTimeout
+	}
+	queryCtx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
+	maxScan := s.cfg.MaxScanEntities
+	if maxScan <= 0 {
+		maxScan = sparql.DefaultMaxScanEntities
+	}
+	maxResults := s.cfg.MaxResults
+	if maxResults <= 0 {
+		maxResults = sparql.DefaultMaxResults
+	}
+
+	truncated := false
+	truncReason := ""
+	entities, err := s.reader.ScanPrefix(queryCtx, prefix, maxScan)
+	if err != nil {
+		if errors.Is(err, reader.ErrScanBudgetExceeded) {
+			if !allowTruncation {
+				writeJSONError(w, http.StatusUnprocessableEntity, sparql.ErrorCodeScanBudgetExceeded, err.Error())
+				return
+			}
+			truncated = true
+			truncReason = sparql.TruncationReasonScanBudget
+		} else {
+			s.writeExecutionError(w, err)
+			return
+		}
+	}
+
+	base := s.mapper.BaseIRI()
+	seen := make(map[string]struct{})
+	triples := make([]message.Triple, 0, len(entities)*4)
+	for i := range entities {
+		if err := queryCtx.Err(); err != nil {
+			s.writeExecutionError(w, err)
+			return
+		}
+		unfolded, err := sparql.UnfoldEntity(&entities[i], base)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, classifyErrorCode(err, "serialization_error"), err.Error())
+			return
+		}
+		var stopped bool
+		for _, tr := range unfolded {
+			ntLine, err := export.SerializeToString([]message.Triple{tr}, export.NTriples, sparql.ExportOptions(base)...)
+			if err != nil || strings.TrimSpace(ntLine) == "" {
+				writeJSONError(w, http.StatusInternalServerError, sparql.ErrorCodeInvalidOutputTriple,
+					fmt.Sprintf("invalid output triple on entity %q", entities[i].ID))
+				return
+			}
+			if _, exists := seen[ntLine]; exists {
+				continue
+			}
+			if len(triples) >= maxResults {
+				if !allowTruncation {
+					writeJSONError(w, http.StatusUnprocessableEntity, sparql.ErrorCodeResultLimitExceeded,
+						fmt.Sprintf("sparql: export exceeded max_results limit of %d", maxResults))
+					return
+				}
+				if !truncated {
+					truncated = true
+					truncReason = sparql.TruncationReasonResultLimit
+				}
+				stopped = true
+				break
+			}
+			seen[ntLine] = struct{}{}
+			triples = append(triples, tr)
+		}
+		if stopped {
+			break
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := WriteGraphResult(&buf, triples, format, base); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, classifyErrorCode(err, "serialization_error"), err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", format.ContentType())
+	if truncated {
+		w.Header().Set(HeaderTruncated, "true")
+		w.Header().Set(HeaderTruncationReason, truncReason)
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(buf.Bytes())
+}
+
+func (s *Server) handleConstructExport(
+	w http.ResponseWriter,
+	r *http.Request,
+	constructStr string,
+	format ResultFormat,
+	allowTruncation bool,
+) {
+	if strings.TrimSpace(constructStr) == "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_export_selector", "export \"construct\" selector must not be empty")
+		return
+	}
+
+	q, err := sparql.Parse(constructStr)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, classifyErrorCode(err, sparql.ErrorCodeSyntax), err.Error())
+		return
+	}
+	if q.Form != sparql.QueryConstruct {
+		writeJSONError(w, http.StatusBadRequest, "invalid_export_selector",
+			"POST /export \"construct\" selector must be a CONSTRUCT query")
+		return
+	}
+
+	res, err := s.executor.Execute(r.Context(), q, sparql.WithAllowTruncation(allowTruncation))
+	if err != nil {
+		s.writeExecutionError(w, err)
+		return
+	}
+
+	var buf bytes.Buffer
+	if err := WriteGraphResult(&buf, res.Triples, format, s.mapper.BaseIRI()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, classifyErrorCode(err, "serialization_error"), err.Error())
 		return
 	}
 
@@ -378,6 +735,8 @@ func (s *Server) writeExecutionError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusGatewayTimeout, sparql.ErrorCodeQueryTimeout, err.Error())
 	case errors.Is(err, context.Canceled):
 		writeJSONError(w, http.StatusGatewayTimeout, "request_canceled", err.Error())
+	case errors.Is(err, sparql.ErrInvalidOutputTriple):
+		writeJSONError(w, http.StatusInternalServerError, sparql.ErrorCodeInvalidOutputTriple, err.Error())
 	default:
 		writeJSONError(w, http.StatusBadRequest, classifyErrorCode(err, "query_execution_error"), err.Error())
 	}
