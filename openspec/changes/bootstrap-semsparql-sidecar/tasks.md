@@ -1,12 +1,13 @@
 # Bootstrap tasks
 
 These are the implementation tasks from issue #1. Each numbered issue task is one reviewable PR. Dependencies run
-0 → 1 → 2 → 3 → 4, with the MVP at 2.3. The source issue remains open. Tasks 0.1, 0.2, D.1, D.2, 1.1, and 5.1
+0 → 1 → 2 → 3 → 4, with the MVP at 2.3. The source issue remains open. Tasks 0.1, 0.2, D.1, D.2, 1.1, 1.2, and 5.1
 (disposition) are complete: `go.mod` pins `semengine v0.1.0-alpha.2` and `semvocab v0.1.0`, the Go verification gates
 and `internal/harness/contract` structural guards and D.2 upstream probes run in `task verify`, owner consumer-contract
 rulings D.1a–D.1e are recorded in `design.md` and `specs/**`, `irimap` (`Mapper`, `CanonicalNTriplesObject`,
-`BlankNodeID`) and its unit/property/fuzz proving tests run in `task verify` and `task cover:check`, and `AGENTS.md`
-and `.agents/rules-index.md` are reconciled. Remaining runtime tasks `1.2`–`4.2` proceed in phase order.
+`BlankNodeID`) and `reader` (`GraphReader`, `MemoryReader`, `MatchAllPattern`, `ErrNilContext`, `ErrEntityNotFound`,
+`ErrScanBudgetExceeded`) and their unit/property/fuzz proving tests run in `task verify` and `task cover:check`, and
+`AGENTS.md` and `.agents/rules-index.md` are reconciled. Remaining runtime tasks `2.1`–`4.2` proceed in phase order.
 
 ## Design readiness
 
@@ -33,7 +34,7 @@ and `.agents/rules-index.md` are reconciled. Remaining runtime tasks `1.2`–`4.
   TestIRIMapperRoundTrip, TestPropIRIMapperRoundTrip, TestIRIMapperMatchesExporter and TestBlankNodeIDMultiValued;
   fuzz external IRI/ID parsing. Use 0-based decimal ASCII step-index encoding (`strconv.Itoa(stepIdx)`, D.1e) and
   the canonical N-Triples object contract verified in D.2 `TestProbeCanonicalNTriplesObjectSeam`.
-- [ ] 1.2 Add GraphReader and MemoryReader with GetEntity, GetBatch, ScanPrefix, ScanPattern and
+- [x] 1.2 Add GraphReader and MemoryReader with GetEntity, GetBatch, ScanPrefix, ScanPattern and
   EntitiesByPredicate. Use shared validators/MatchEntityIDPattern. Test empty-sentinel distinction, invalid input,
   missing entities, deterministic ID sets and budget-aware scans, with no silently incomplete success.
 

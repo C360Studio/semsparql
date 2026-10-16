@@ -20,6 +20,7 @@ readonly module=github.com/c360studio/semsparql
 # lines here as tasks 1.1–4.1 land.
 default_targets=(
   "irimap unit"
+  "reader unit"
 )
 if [ -n "${COVER_TARGETS:-}" ]; then
   targets=()

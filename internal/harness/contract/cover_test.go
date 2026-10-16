@@ -132,17 +132,21 @@ func TestCoverCheckThresholdAndMerging(t *testing.T) {
 		return string(out), err
 	}
 
-	eighty := "mode: atomic\n" + mod + "irimap/m.go:1.1,1.9 8 1\n" + mod + "irimap/m.go:2.1,2.9 2 0\n"
-	seventyNine := "mode: atomic\n" + mod + "irimap/m.go:1.1,1.9 79 1\n" + mod + "irimap/m.go:2.1,2.9 21 0\n"
+	bothEighty := "mode: atomic\n" +
+		mod + "irimap/m.go:1.1,1.9 8 1\n" + mod + "irimap/m.go:2.1,2.9 2 0\n" +
+		mod + "reader/r.go:1.1,1.9 8 1\n" + mod + "reader/r.go:2.1,2.9 2 0\n"
+	readerSeventyNine := "mode: atomic\n" +
+		mod + "irimap/m.go:1.1,1.9 8 1\n" + mod + "irimap/m.go:2.1,2.9 2 0\n" +
+		mod + "reader/r.go:1.1,1.9 79 1\n" + mod + "reader/r.go:2.1,2.9 21 0\n"
 
-	// Default target list (no COVER_TARGETS override) enforces irimap unit coverage.
-	if out, err := run(t, "", eighty, "mode: atomic\n"); err != nil || !strings.Contains(out, "cover: irimap 80.0%") {
+	// Default target list (no COVER_TARGETS override) enforces irimap and reader unit coverage.
+	if out, err := run(t, "", bothEighty, "mode: atomic\n"); err != nil || !strings.Contains(out, "cover: irimap 80.0%") || !strings.Contains(out, "cover: reader 80.0%") {
 		t.Fatalf("default 80%% unit profile failed: err=%v\n%s", err, out)
 	}
-	if out, err := run(t, "", seventyNine, "mode: atomic\n"); err == nil || !strings.Contains(out, "irimap 79.0% < 80%") {
+	if out, err := run(t, "", readerSeventyNine, "mode: atomic\n"); err == nil || !strings.Contains(out, "reader 79.0% < 80%") {
 		t.Fatalf("default 79%% unit profile did not fail: err=%v\n%s", err, out)
 	}
-	if out, err := run(t, "", "mode: atomic\n", eighty); err == nil || !strings.Contains(out, "irimap: no statements in the unit profile") {
+	if out, err := run(t, "", "mode: atomic\n", bothEighty); err == nil || !strings.Contains(out, "irimap: no statements in the unit profile") || !strings.Contains(out, "reader: no statements in the unit profile") {
 		t.Fatalf("default missing unit statements did not fail: err=%v\n%s", err, out)
 	}
 

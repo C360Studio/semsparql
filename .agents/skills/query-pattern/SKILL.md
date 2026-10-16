@@ -10,7 +10,8 @@ description: >-
 
 Adapted from semengine's `query-pattern` skill (semengine `67d0ee9`). semsparql is a read-only consumer: every read
 goes through `reader.GraphReader` (issue #1, §2.1), and nothing here writes `ENTITY_STATES` or publishes
-`graph.mutation.*`. None of the readers below exists in this tree yet; do not describe a planned reader as present.
+`graph.mutation.*`. `reader.GraphReader` and `reader.MemoryReader` exist in `reader/` (task 1.2); `NATSRPCReader`
+(task 4.1) and the deferred `KVWatchReader` (task 5.1) do not exist in this tree yet.
 
 ## What exists upstream
 

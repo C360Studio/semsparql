@@ -17,10 +17,11 @@ that edge. It never writes the graph. It reads through `reader.GraphReader`, map
 
 The plan is issue #1 (bootstrap, Stage 3): layout, design decisions, proving tests and tasks. Task 0.1 (`go.mod`
 pinning `semengine v0.1.0-alpha.2` and `semvocab v0.1.0`, Go verification gates, and `internal/harness/contract`
-structural guards), task 0.2 (`semengine#256` and `semengine#259`, both merged into `v0.1.0-alpha.2`), and task 1.1
-(`irimap` forward/inverse entity-IRI mapping, canonical N-Triples object extraction, and deterministic `BlankNodeID`)
-are in place. **Remaining product runtime packages (`reader`, `sparql`, `server`, `cmd/semsparql`) do not exist in the
-tree yet**; do not describe unimplemented runtime packages as present.
+structural guards), task 0.2 (`semengine#256` and `semengine#259`, both merged into `v0.1.0-alpha.2`), task 1.1
+(`irimap` forward/inverse entity-IRI mapping, canonical N-Triples object extraction, and deterministic `BlankNodeID`),
+and task 1.2 (`reader.GraphReader` and `reader.MemoryReader`) are in place. **Remaining product runtime packages
+(`sparql`, `server`, `cmd/semsparql`) and `reader.NATSRPCReader` do not exist in the tree yet**; do not describe
+unimplemented runtime packages as present.
 
 ## Commands
 
@@ -88,10 +89,10 @@ A new repo-wide or agent-conduct rule updates both this file and `.agents/rules-
 
 | Gate | Rule | Where |
 | --- | --- | --- |
-| `verify+review` | Entity IDs, patterns and prefixes pass SemEngine's shared validators at entry, before any request | `dev` § Semantic identity; `rev`; `TestIRIMapperRoundTrip`, `FuzzIRIToEntityID` |
-| `review` | Sort and deduplicate complete entity-ID and RDF-term sets before a limit; SPARQL solutions keep duplicates unless `DISTINCT`/`REDUCED` and are ordered deterministically before `LIMIT`/`OFFSET` | `dev`, `rev` |
+| `verify+review` | Entity IDs, patterns and prefixes pass SemEngine's shared validators at entry, before any request | `dev` § Semantic identity; `rev`; `TestIRIMapperRoundTrip`, `FuzzIRIToEntityID`, `TestMemoryReaderInvalidInput`, `TestMemoryReaderEmptySentinelDistinction`, `FuzzMemoryReaderSelectors` |
+| `verify+review` | Sort and deduplicate complete entity-ID and RDF-term sets before a limit; SPARQL solutions keep duplicates unless `DISTINCT`/`REDUCED` and are ordered deterministically before `LIMIT`/`OFFSET` | `dev`, `rev`; `TestMemoryReaderDeterministicIDSets`, `TestPropMemoryReaderPatternAndPrefix` |
 | `review` | Never report partial replay, index or result state as ready or complete | `dev`, `rev` |
-| `review` | Timeout, result cap and scan budget return a deterministic error, never silent partial results, unless the client opts into truncation; unconstrained `?s ?p ?o` is stopped by the scan budget | `dev`, `rev` § Read-only boundary; issue #1 §2.6 |
+| `verify+review` | Timeout, result cap and scan budget return a deterministic error, never silent partial results, unless the client opts into truncation; unconstrained `?s ?p ?o` is stopped by the scan budget | `dev`, `rev` § Read-only boundary; issue #1 §2.6; `TestMemoryReaderBudgetAwareScans` |
 | `review` | Out-of-scope SPARQL syntax returns a 400 that names the feature | `dev`, `rev`; issue #1 §2.5 |
 | `review` | Bind to localhost by default; a non-local bind requires a bearer token or mTLS | `dev`, `rev` (`BLOCKING`); issue #1 §2.6 |
 
@@ -104,8 +105,8 @@ A new repo-wide or agent-conduct rule updates both this file and `.agents/rules-
 | `verify+review` | No test calls `Skip`/`Skipf`/`SkipNow`; no test file carries a build tag other than `integration` | `dev`, `rev`; `testing`; `TestNoSkippedTests`, `TestNoHiddenTests` |
 | `verify+review` | Test cleanup never stops, closes, or terminates under an unbounded context | `dev`, `rev`; `testing`; `task cleanup-roots:check` (`scripts/cleanup-roots-check.sh`) |
 | `review` | Tests use an independent oracle and are shown able to fail | `dev`, `rev`; `testing` |
-| `verify+review` | Every surface that parses external bytes or strings (SPARQL text, IRIs, entity IDs, HTTP parameters) ships a `Fuzz*` target with a seed corpus of accepted and rejected classes | `dev`, `rev`; `testing`; `FuzzIRIToEntityID` |
-| `verify+review` | Changes with interacting inputs, a stated law, or order-dependent history record whether generated checks are used; Rapid runs record seed and checks completed; histories check against a reference model | `dev`, `rev`; `testing`; `TestPropIRIMapperRoundTrip` |
+| `verify+review` | Every surface that parses external bytes or strings (SPARQL text, IRIs, entity IDs, HTTP parameters) ships a `Fuzz*` target with a seed corpus of accepted and rejected classes | `dev`, `rev`; `testing`; `FuzzIRIToEntityID`, `FuzzMemoryReaderSelectors` |
+| `verify+review` | Changes with interacting inputs, a stated law, or order-dependent history record whether generated checks are used; Rapid runs record seed and checks completed; histories check against a reference model | `dev`, `rev`; `testing`; `TestPropIRIMapperRoundTrip`, `TestPropMemoryReaderPatternAndPrefix` |
 | `review` | Mutation checks report survivors/inconclusive runs as such; in-tree wrong changes use a `cp` backup and verified SHA-256 restore | `dev`, `rev`; `testing` |
 | `review` | Claims about NATS keys, filters and query verbs are proven against a real NATS server and graph-ingest, not arithmetic | `dev`, `rev` |
 | `review` | Never run a git command that can discard working-tree state (`checkout --`, `restore`, `stash`, `clean`, `reset --hard`) | `dev`, `rev`, `arch` |
