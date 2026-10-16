@@ -2,7 +2,7 @@
 
 These are the implementation tasks from issue #1. Each numbered issue task is one reviewable PR. Dependencies run
 0 → 1 → 2 → 3 → 4, with the MVP at 2.3. The source issue remains open. Tasks 0.1, 0.2, D.1, D.2, 1.1, 1.2, 2.1, 2.2,
-2.3, 3.1, 3.2, 3.3, 4.1, and 5.1 (disposition) are complete: `go.mod` pins `semengine v0.1.0-alpha.2` and
+2.3, 3.1, 3.2, 3.3, 4.1, 4.2, and 5.1 (disposition) are complete: `go.mod` pins `semengine v0.1.0-alpha.2` and
 `semvocab v0.1.0`, the Go verification gates and `internal/harness/contract` structural guards and D.2 upstream probes
 run in `task verify`, owner
 consumer-contract rulings D.1a–D.1e are recorded in `design.md` and `specs/**`, `irimap` (`Mapper`,
@@ -17,9 +17,11 @@ complete-chain `ProjectionSpec` folding and virtual-unfolded fallback, `UnfoldEn
 `ErrResultLimitExceeded`, `ErrScanBudgetExceeded`, `ErrQueryTimeout`, `ErrIncompleteSuperclassClosure`,
 `ErrInvalidOutputTriple`), `server` (`/sparql`, `/entities/{entity_id}.jsonld`, `/export`, `Server`, `Config`,
 `ValidateConfig`, `NegotiateAccept`, `WriteSelectAskResult`, `WriteGraphResult`, `ErrNotAcceptable`,
-`ErrUnsafeExposure`, `ErrQueryTooLarge`, `ErrExportBodyTooLarge`), and `cmd/semsparql` and their unit/property/fuzz
-proving tests run in `task verify` and `task cover:check`, and `AGENTS.md` and `.agents/rules-index.md` are reconciled.
-Remaining runtime task `4.2` proceeds next.
+`ErrUnsafeExposure`, `ErrQueryTooLarge`, `ErrExportBodyTooLarge`), `cmd/semsparql`, and the `-tags=integration`
+live NATS/DIEKM end-to-end suite (`server/diekm_integration_test.go`, `TestIntegrationDIEKMEndToEndSuite` and
+`TestPropIntegrationDIEKMLiveServerParity`) and their unit/property/fuzz/integration proving tests run in `task verify`
+and `task cover:check`, and `AGENTS.md` and `.agents/rules-index.md` are reconciled.
+Remaining archive/reconciliation task `6.1` proceeds when ready to archive.
 
 ## Design readiness
 
@@ -88,7 +90,7 @@ Remaining runtime task `4.2` proceeds next.
   systems; test missing batches, errors, cancellation, short pages with continuation, shutdown and no writes.
   Prove startup refuses an incompatible server without a full-prefix filtering fallback (using the D.2
   `TestProbeServerPatternCapabilitySeam` check).
-- [ ] 4.2 Run end-to-end tests using the released SemVocab DIEKM pack and a live NATS/graph-ingest fixture,
+- [x] 4.2 Run end-to-end tests using the released SemVocab DIEKM pack and a live NATS/graph-ingest fixture,
   covering the complete issue #1 proving-test set. Record Rapid seeds/check counts, fuzz exploration vs replay,
   independent oracles and failing regression/mutation evidence. Run all implemented gates through task verify.
   Use ephemeral listeners, explicit synchronization and bounded cleanup; do not skip tests or use fixed sleeps.

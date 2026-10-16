@@ -7,9 +7,10 @@ RDF graph. SemSparql sits at the export edge: it translates incoming SPARQL 1.1 
 projects stored entities into standard RDF triples on demand, and serializes results using SemEngine's own exporter. It
 never writes to the graph.
 
-As of Task 4.1, all five runtime packages and the standalone binary (`irimap`, `reader.GraphReader`,
-`reader.MemoryReader`, `reader.NATSRPCReader`, `sparql`, `server`, and `cmd/semsparql`) are present in the tree. The
-dedicated `-tags=integration` DIEKM end-to-end test suite lands in Task 4.2.
+As of Task 4.2, all five runtime packages, the standalone binary (`irimap`, `reader.GraphReader`,
+`reader.MemoryReader`, `reader.NATSRPCReader`, `sparql`, `server`, and `cmd/semsparql`), and the `-tags=integration`
+live NATS/DIEKM end-to-end test suite ([`server/diekm_integration_test.go`](../server/diekm_integration_test.go)) are
+present in the tree.
 
 ## Package boundaries and data flow
 

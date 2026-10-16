@@ -28,10 +28,11 @@ explicit/virtual graph-set merging, and startup `ValidateSuperclassClosure` chec
 (`sparql` complete-chain `ProjectionSpec` folding and equivalent virtual-unfolded fallback evaluation), task 3.3
 (`sparql` `CONSTRUCT`/`DESCRIBE`, `UnfoldEntity`, terminal datatype propagation, and loud invalid-triple validation;
 `server` `GET /entities/{entity_id}.jsonld` and `POST /export`; `docs/architecture.md` and
-`docs/shacl-compliance-gate.md`), and task 4.1 (`reader.NATSRPCReader` with declared `graph.QueryVerbs()`, classified
+`docs/shacl-compliance-gate.md`), task 4.1 (`reader.NATSRPCReader` with declared `graph.QueryVerbs()`, classified
 RPC, opaque cursor pagination, startup `VerifyPatternCapability`, and `TestScanPatternReaderParity`; `cmd/semsparql`
-CLI wiring and lifecycle) are in place. **The dedicated `-tags=integration` live NATS/DIEKM end-to-end test suite
-(`4.2`) does not exist in the tree yet**; do not describe unimplemented suites as present.
+CLI wiring and lifecycle), and task 4.2 (`server/diekm_integration_test.go` `-tags=integration` live NATS/DIEKM
+end-to-end proving test suite `TestIntegrationDIEKMEndToEndSuite` and `TestPropIntegrationDIEKMLiveServerParity`) are
+in place.
 
 ## Commands
 
@@ -76,9 +77,9 @@ A new repo-wide or agent-conduct rule updates both this file and `.agents/rules-
 
 | Gate | Rule | Where |
 | --- | --- | --- |
-| `verify+review` | Never write `ENTITY_STATES` or publish `graph.mutation.*`; zero mutation of SemEngine state | `dev`, `rev` (`BLOCKING`); issue #1 §2.1; `TestScanPatternReaderParity`, `TestNATSRPCReaderNoLiteralQuerySubjectsInSource` |
-| `verify+review` | Read only through `reader.GraphReader` over verbs declared in `graph.QueryVerbs()`; never spell a `graph.ingest.query.*` subject as a literal | `dev`, `rev`; `query-pattern` skill; `TestNATSRPCReaderNoLiteralQuerySubjectsInSource`, `TestScanPatternReaderParity` |
-| `verify+review` | IRI mapping and RDF graph output come from `semengine/vocabulary/export`; no second IRI mapping and no RDF graph writers here | `dev`, `rev`, `arch`; issue #1 §1, §2.2.1; `TestIRIMapperMatchesExporter`, `TestConstructUnfoldsReifiedGraphForSHACL`, `TestUnfoldTerminalDatatypePropagation`, `TestEntityJSONLDAndExportRoutes` |
+| `verify+review` | Never write `ENTITY_STATES` or publish `graph.mutation.*`; zero mutation of SemEngine state | `dev`, `rev` (`BLOCKING`); issue #1 §2.1; `TestScanPatternReaderParity`, `TestNATSRPCReaderNoLiteralQuerySubjectsInSource`, `TestIntegrationDIEKMEndToEndSuite` |
+| `verify+review` | Read only through `reader.GraphReader` over verbs declared in `graph.QueryVerbs()`; never spell a `graph.ingest.query.*` subject as a literal | `dev`, `rev`; `query-pattern` skill; `TestNATSRPCReaderNoLiteralQuerySubjectsInSource`, `TestScanPatternReaderParity`, `TestIntegrationDIEKMEndToEndSuite` |
+| `verify+review` | IRI mapping and RDF graph output come from `semengine/vocabulary/export`; no second IRI mapping and no RDF graph writers here | `dev`, `rev`, `arch`; issue #1 §1, §2.2.1; `TestIRIMapperMatchesExporter`, `TestConstructUnfoldsReifiedGraphForSHACL`, `TestUnfoldTerminalDatatypePropagation`, `TestEntityJSONLDAndExportRoutes`, `TestIntegrationDIEKMEndToEndSuite` |
 | `review` | A KV watch reader, if built, declares a memory ceiling (refusing to start above it) and freshness, and is a stopgap for graph-index, never a competing index | `dev`, `rev`, `arch`; issue #1 §2.1 |
 | `verify+review` | SemEngine and SemVocab are pinned to released tags: no `replace`, fork, local copy, or pseudo-version | `protocol` § Upstream boundary; `rev`; `task tidy:check`; `TestPinnedDependencies` |
 | `review` | An upstream gap is filed on the upstream repository and the dependent task carries `Hold:` naming it; never worked around here | `protocol` § Upstream boundary; `arch` |
@@ -91,7 +92,7 @@ A new repo-wide or agent-conduct rule updates both this file and `.agents/rules-
 | `review` | Production structs never retain `context.Context`; never invent roots or nil defaults | `dev`, `rev` § Context ownership |
 | `review` | State travels as an argument, field, or stored entry, never `context.WithValue` / `ctx.Value` | `dev`, `rev` |
 | `review` | Background work outside a service uses `Run(ctx)`, joining `Close()`, or `Shutdown(ctx)`: no fixed timeout, nil ctx refused | `dev`, `rev` § Background work |
-| `verify+review` | Classified NATS RPC uses `RequestClassified` / `RequestWithRetryClassified`, propagating class, code, detail | `dev` § NATS RPC; `rev`; `TestNATSRPCReaderShortPagesContinuationAndFailClosed`, `TestScanPatternReaderParity`, `TestEntityJSONLDAndExportRoutes` |
+| `verify+review` | Classified NATS RPC uses `RequestClassified` / `RequestWithRetryClassified`, propagating class, code, detail | `dev` § NATS RPC; `rev`; `TestNATSRPCReaderShortPagesContinuationAndFailClosed`, `TestScanPatternReaderParity`, `TestEntityJSONLDAndExportRoutes`, `TestIntegrationDIEKMEndToEndSuite` |
 | `review` | Failure paths fail closed; any skip, drop, or degrade is declared with a log line and a metric | `dev`, `rev` |
 | `review` | New surface names a caller here, a named consumer, or a contract line; returns the answer, not components; no back doors | `dev` § Before adding anything new, § Exported-surface contracts; `rev` |
 
@@ -99,11 +100,11 @@ A new repo-wide or agent-conduct rule updates both this file and `.agents/rules-
 
 | Gate | Rule | Where |
 | --- | --- | --- |
-| `verify+review` | Entity IDs, patterns and prefixes pass SemEngine's shared validators at entry, before any request | `dev` § Semantic identity; `rev`; `TestIRIMapperRoundTrip`, `FuzzIRIToEntityID`, `TestMemoryReaderInvalidInput`, `TestMemoryReaderEmptySentinelDistinction`, `FuzzMemoryReaderSelectors`, `TestNATSRPCReaderConstructorAndInputValidation`, `TestEntityJSONLDAndExportRoutes`, `FuzzExportHTTPRequest` |
-| `verify+review` | Sort and deduplicate complete entity-ID and RDF-term sets before a limit; SPARQL solutions keep duplicates unless `DISTINCT`/`REDUCED` and are ordered deterministically before `LIMIT`/`OFFSET` | `dev`, `rev`; `TestMemoryReaderDeterministicIDSets`, `TestPropMemoryReaderPatternAndPrefix`, `TestScanPatternReaderParity`, `TestLookupByIRIMultiMatchUnion`, `TestSelectAndAskExecution`, `TestPropSelectExecutionMatchesReferenceModel`, `TestVirtualRDFTypeAndSubclassResolution`, `TestPropVirtualTypeAndSubClassClosure`, `TestBGPFoldingCollapsesDIEKMChains`, `TestPropBGPFoldingEquivalence`, `TestConstructUnfoldsReifiedGraphForSHACL`, `TestDescribeOutgoingEntityCBDAndInvalidTripleGuard`, `TestPropUnfoldAndConstructGraphEquivalence` |
+| `verify+review` | Entity IDs, patterns and prefixes pass SemEngine's shared validators at entry, before any request | `dev` § Semantic identity; `rev`; `TestIRIMapperRoundTrip`, `FuzzIRIToEntityID`, `TestMemoryReaderInvalidInput`, `TestMemoryReaderEmptySentinelDistinction`, `FuzzMemoryReaderSelectors`, `TestNATSRPCReaderConstructorAndInputValidation`, `TestEntityJSONLDAndExportRoutes`, `FuzzExportHTTPRequest`, `TestIntegrationDIEKMEndToEndSuite` |
+| `verify+review` | Sort and deduplicate complete entity-ID and RDF-term sets before a limit; SPARQL solutions keep duplicates unless `DISTINCT`/`REDUCED` and are ordered deterministically before `LIMIT`/`OFFSET` | `dev`, `rev`; `TestMemoryReaderDeterministicIDSets`, `TestPropMemoryReaderPatternAndPrefix`, `TestScanPatternReaderParity`, `TestLookupByIRIMultiMatchUnion`, `TestSelectAndAskExecution`, `TestPropSelectExecutionMatchesReferenceModel`, `TestVirtualRDFTypeAndSubclassResolution`, `TestPropVirtualTypeAndSubClassClosure`, `TestBGPFoldingCollapsesDIEKMChains`, `TestPropBGPFoldingEquivalence`, `TestConstructUnfoldsReifiedGraphForSHACL`, `TestDescribeOutgoingEntityCBDAndInvalidTripleGuard`, `TestPropUnfoldAndConstructGraphEquivalence`, `TestIntegrationDIEKMEndToEndSuite`, `TestPropIntegrationDIEKMLiveServerParity` |
 | `review` | Never report partial replay, index or result state as ready or complete | `dev`, `rev` |
-| `verify+review` | Timeout, result cap and scan budget return a deterministic error, never silent partial results, unless the client opts into truncation; unconstrained `?s ?p ?o` is stopped by the scan budget | `dev`, `rev` § Read-only boundary; issue #1 §2.6; `TestMemoryReaderBudgetAwareScans`, `TestScanPatternReaderParity`, `TestQueryLimits` |
-| `verify+review` | Out-of-scope SPARQL syntax returns a 400 naming the feature | `dev`, `rev`; issue #1 §2.5; `TestUnsupportedFeatureErrors` |
+| `verify+review` | Timeout, result cap and scan budget return a deterministic error, never silent partial results, unless the client opts into truncation; unconstrained `?s ?p ?o` is stopped by the scan budget | `dev`, `rev` § Read-only boundary; issue #1 §2.6; `TestMemoryReaderBudgetAwareScans`, `TestScanPatternReaderParity`, `TestQueryLimits`, `TestIntegrationDIEKMEndToEndSuite` |
+| `verify+review` | Out-of-scope SPARQL syntax returns a 400 naming the feature | `dev`, `rev`; issue #1 §2.5; `TestUnsupportedFeatureErrors`, `TestIntegrationDIEKMEndToEndSuite` |
 | `verify+review` | Bind to localhost by default; a non-local bind requires a bearer token or mTLS | `dev`, `rev` (`BLOCKING`); issue #1 §2.6; `TestServerAuthAndBindValidation`, `TestRunConfigAndFlagValidation`, `TestBuildTLSConfigValidation` |
 
 ### 4. Testing and verification
@@ -116,9 +117,9 @@ A new repo-wide or agent-conduct rule updates both this file and `.agents/rules-
 | `verify+review` | Test cleanup never stops, closes, or terminates under an unbounded context | `dev`, `rev`; `testing`; `task cleanup-roots:check` (`scripts/cleanup-roots-check.sh`) |
 | `review` | Tests use an independent oracle and are shown able to fail | `dev`, `rev`; `testing` |
 | `verify+review` | Every surface that parses external bytes or strings (SPARQL text, IRIs, entity IDs, HTTP parameters) ships a `Fuzz*` target with a seed corpus of accepted and rejected classes | `dev`, `rev`; `testing`; `FuzzIRIToEntityID`, `FuzzMemoryReaderSelectors`, `FuzzParseSPARQL`, `FuzzSPARQLHTTPRequest`, `FuzzExportHTTPRequest` |
-| `verify+review` | Changes with interacting inputs, a stated law, or order-dependent history record whether generated checks are used; Rapid runs record seed and checks completed; histories check against a reference model | `dev`, `rev`; `testing`; `TestPropIRIMapperRoundTrip`, `TestPropMemoryReaderPatternAndPrefix`, `TestScanPatternReaderParity`, `TestPropParseSPARQLGeneratedQueries`, `TestPropSelectExecutionMatchesReferenceModel`, `TestPropVirtualTypeAndSubClassClosure`, `TestPropBGPFoldingEquivalence`, `TestPropUnfoldAndConstructGraphEquivalence` |
+| `verify+review` | Changes with interacting inputs, a stated law, or order-dependent history record whether generated checks are used; Rapid runs record seed and checks completed; histories check against a reference model | `dev`, `rev`; `testing`; `TestPropIRIMapperRoundTrip`, `TestPropMemoryReaderPatternAndPrefix`, `TestScanPatternReaderParity`, `TestPropParseSPARQLGeneratedQueries`, `TestPropSelectExecutionMatchesReferenceModel`, `TestPropVirtualTypeAndSubClassClosure`, `TestPropBGPFoldingEquivalence`, `TestPropUnfoldAndConstructGraphEquivalence`, `TestPropIntegrationDIEKMLiveServerParity` |
 | `review` | Mutation checks report survivors/inconclusive runs as such; in-tree wrong changes use a `cp` backup and verified SHA-256 restore | `dev`, `rev`; `testing` |
-| `verify+review` | Claims about NATS keys, filters and query verbs are proven against a real NATS server and graph-ingest, not arithmetic | `dev`, `rev`; `TestScanPatternReaderParity`, `TestRunEndToEndWithLiveNATSAndGraphIngest` |
+| `verify+review` | Claims about NATS keys, filters and query verbs are proven against a real NATS server and graph-ingest, not arithmetic | `dev`, `rev`; `TestScanPatternReaderParity`, `TestRunEndToEndWithLiveNATSAndGraphIngest`, `TestIntegrationDIEKMEndToEndSuite`, `TestPropIntegrationDIEKMLiveServerParity` |
 | `review` | Never run a git command that can discard working-tree state (`checkout --`, `restore`, `stash`, `clean`, `reset --hard`) | `dev`, `rev`, `arch` |
 
 ### 5. Design and architecture

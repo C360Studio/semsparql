@@ -1,11 +1,10 @@
 # Testing in SemSparql
 
 This page is for a developer about to write or review a test here. It covers what the test has to tell apart, which
-level to run it at, how to show it can fail, and what to record in the pull request. Tasks 0.1–4.1 added `go.mod`, the
-Go verification gates, `internal/harness/contract` structural guards, and all runtime packages (`irimap`, `reader`,
-`sparql`, `server`, `cmd/semsparql`, including `TestScanPatternReaderParity` and `TestRunEndToEndWithLiveNATSAndGraphIngest`
-against an embedded JetStream NATS server and `graph-ingest`); the dedicated `-tags=integration` DIEKM end-to-end suite
-lands in task 4.2.
+level to run it at, how to show it can fail, and what to record in the pull request. Tasks 0.1–4.2 added `go.mod`, the
+Go verification gates, `internal/harness/contract` structural guards, all runtime packages (`irimap`, `reader`,
+`sparql`, `server`, `cmd/semsparql`), and the `-tags=integration` live NATS/DIEKM end-to-end test suite
+(`server/diekm_integration_test.go`, `TestIntegrationDIEKMEndToEndSuite` and `TestPropIntegrationDIEKMLiveServerParity`).
 
 ## Start with the wrong behavior
 
@@ -46,7 +45,7 @@ being protected.
 |---|---|---|
 | Unit | `task test:unit` | One function or in-process behavior, including `server` over `MemoryReader` and `NATSRPCReader` / `cmd/semsparql` over an in-process `nats-server/v2` + `graph-ingest`. Runs with `-race`. |
 | Unit, repeated | `task test:repeat` | A test that depends on run order, on state left by another test, or on timing. Unit tests run several times, shuffled. |
-| Integration | `task test:integration` | Behavior that runs under `-tags=integration` (full DIEKM end-to-end suite lands in task 4.2). |
+| Integration | `task test:integration` | Behavior that runs under `-tags=integration` (`TestIntegrationDIEKMEndToEndSuite` and `TestPropIntegrationDIEKMLiveServerParity` in `server/diekm_integration_test.go`). |
 | Structural guards | `task verify` | Repository-wide rules checked by `internal/harness/contract` tests and scripts (`scripts/lint-test-ports.sh`, `scripts/cleanup-roots-check.sh`). |
 
 ### Unit tests
@@ -62,9 +61,10 @@ go test -race -count=1 -run '^TestBlankNodeID' ./irimap/
 
 Integration tests live in `*_integration_test.go` files that start with `//go:build integration`, so `go test`
 without the tag does not build them. Real-broker NATS and `graph-ingest` parity tests (`TestScanPatternReaderParity` in
-`reader/nats_test.go` and `TestRunEndToEndWithLiveNATSAndGraphIngest` in `cmd/semsparql/main_test.go`) start an
-in-process `nats-server/v2` with JetStream on an ephemeral port (`127.0.0.1:-1`) and wire a real
-`graphingest.CreateGraphIngest` component; the dedicated `-tags=integration` DIEKM end-to-end suite lands in task 4.2.
+`reader/nats_test.go`, `TestRunEndToEndWithLiveNATSAndGraphIngest` in `cmd/semsparql/main_test.go`, and
+`TestIntegrationDIEKMEndToEndSuite` / `TestPropIntegrationDIEKMLiveServerParity` in `server/diekm_integration_test.go`)
+start an in-process `nats-server/v2` with JetStream on an ephemeral port (`127.0.0.1:-1`) and wire a real
+`graphingest.CreateGraphIngest` component alongside the released SemVocab BFO/CCO Core and DIEKM packs.
 
 ### Structural guards
 
