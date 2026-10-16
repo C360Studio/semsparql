@@ -2,15 +2,16 @@
 
 These are the implementation tasks from issue #1. Each numbered issue task is one reviewable PR. Dependencies run
 0 → 1 → 2 → 3 → 4, with the MVP at 2.3. The source issue remains open. Tasks 0.1, 0.2, D.1, D.2, 1.1, 1.2, 2.1, 2.2,
-and 5.1 (disposition) are complete: `go.mod` pins `semengine v0.1.0-alpha.2` and `semvocab v0.1.0`, the Go verification
-gates and `internal/harness/contract` structural guards and D.2 upstream probes run in `task verify`, owner
+2.3, and 5.1 (disposition) are complete: `go.mod` pins `semengine v0.1.0-alpha.2` and `semvocab v0.1.0`, the Go
+verification gates and `internal/harness/contract` structural guards and D.2 upstream probes run in `task verify`, owner
 consumer-contract rulings D.1a–D.1e are recorded in `design.md` and `specs/**`, `irimap` (`Mapper`,
 `CanonicalNTriplesObject`, `BlankNodeID`), `reader` (`GraphReader`, `MemoryReader`, `MatchAllPattern`, `ErrNilContext`,
-`ErrEntityNotFound`, `ErrScanBudgetExceeded`), and `sparql` AST/parser and plain-BGP `SELECT`/`ASK` planner/executor
+`ErrEntityNotFound`, `ErrScanBudgetExceeded`), `sparql` AST/parser and plain-BGP `SELECT`/`ASK` planner/executor
 (`Parse`, `Query`, `PlanBGP`, `Executor`, `ErrSyntax`, `ErrUnsupportedFeature`, `ErrResultLimitExceeded`,
-`ErrScanBudgetExceeded`, `ErrQueryTimeout`) and their unit/property/fuzz proving tests run in `task verify` and
-`task cover:check`, and `AGENTS.md` and `.agents/rules-index.md` are reconciled. Remaining runtime tasks `2.3`–`4.2`
-proceed in phase order.
+`ErrScanBudgetExceeded`, `ErrQueryTimeout`), and `server` `/sparql` `SELECT`/`ASK` MVP (`Server`, `Config`,
+`ValidateConfig`, `NegotiateAccept`, `WriteSelectAskResult`, `ErrNotAcceptable`, `ErrUnsafeExposure`,
+`ErrQueryTooLarge`) and their unit/property/fuzz proving tests run in `task verify` and `task cover:check`, and
+`AGENTS.md` and `.agents/rules-index.md` are reconciled. Remaining runtime tasks `3.1`–`4.2` proceed in phase order.
 
 ## Design readiness
 
@@ -49,7 +50,7 @@ proceed in phase order.
   FILTER, DISTINCT, ORDER BY, LIMIT/OFFSET. Prove TestLookupByIRIMultiMatchUnion and TestQueryLimits; explicitly
   test duplicate UNION solutions survive, DISTINCT removes duplicates, and unknown ordinary predicate IRIs yield
   no matches after virtual type/projection handling.
-- [ ] 2.3 Add GET/raw/form POST /sparql with negotiated JSON/XML/CSV/TSV results, bounded inputs (64 KiB max query),
+- [x] 2.3 Add GET/raw/form POST /sparql with negotiated JSON/XML/CSV/TSV results, bounded inputs (64 KiB max query),
   query budgets, localhost/auth defaults and cancellation. Prove the SELECT/ASK portion of
   TestSPARQL11ProtocolConformance, TestQueryLimits and TestUnsupportedFeatureErrors, including 400/406/413/422/504
   statuses and opt-in `X-Semsparql-Truncated: true` / `X-Semsparql-Truncation-Reason` headers (D.1a, D.1b). This is

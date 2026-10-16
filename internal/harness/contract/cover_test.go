@@ -132,23 +132,25 @@ func TestCoverCheckThresholdAndMerging(t *testing.T) {
 		return string(out), err
 	}
 
-	allThreeEighty := "mode: atomic\n" +
+	allFourEighty := "mode: atomic\n" +
 		mod + "irimap/m.go:1.1,1.9 8 1\n" + mod + "irimap/m.go:2.1,2.9 2 0\n" +
 		mod + "reader/r.go:1.1,1.9 8 1\n" + mod + "reader/r.go:2.1,2.9 2 0\n" +
-		mod + "sparql/p.go:1.1,1.9 8 1\n" + mod + "sparql/p.go:2.1,2.9 2 0\n"
-	sparqlSeventyNine := "mode: atomic\n" +
+		mod + "sparql/p.go:1.1,1.9 8 1\n" + mod + "sparql/p.go:2.1,2.9 2 0\n" +
+		mod + "server/s.go:1.1,1.9 8 1\n" + mod + "server/s.go:2.1,2.9 2 0\n"
+	serverSeventyNine := "mode: atomic\n" +
 		mod + "irimap/m.go:1.1,1.9 8 1\n" + mod + "irimap/m.go:2.1,2.9 2 0\n" +
 		mod + "reader/r.go:1.1,1.9 8 1\n" + mod + "reader/r.go:2.1,2.9 2 0\n" +
-		mod + "sparql/p.go:1.1,1.9 79 1\n" + mod + "sparql/p.go:2.1,2.9 21 0\n"
+		mod + "sparql/p.go:1.1,1.9 8 1\n" + mod + "sparql/p.go:2.1,2.9 2 0\n" +
+		mod + "server/s.go:1.1,1.9 79 1\n" + mod + "server/s.go:2.1,2.9 21 0\n"
 
-	// Default target list (no COVER_TARGETS override) enforces irimap, reader, and sparql unit coverage.
-	if out, err := run(t, "", allThreeEighty, "mode: atomic\n"); err != nil || !strings.Contains(out, "cover: irimap 80.0%") || !strings.Contains(out, "cover: reader 80.0%") || !strings.Contains(out, "cover: sparql 80.0%") {
+	// Default target list (no COVER_TARGETS override) enforces irimap, reader, sparql, and server unit coverage.
+	if out, err := run(t, "", allFourEighty, "mode: atomic\n"); err != nil || !strings.Contains(out, "cover: irimap 80.0%") || !strings.Contains(out, "cover: reader 80.0%") || !strings.Contains(out, "cover: sparql 80.0%") || !strings.Contains(out, "cover: server 80.0%") {
 		t.Fatalf("default 80%% unit profile failed: err=%v\n%s", err, out)
 	}
-	if out, err := run(t, "", sparqlSeventyNine, "mode: atomic\n"); err == nil || !strings.Contains(out, "sparql 79.0% < 80%") {
+	if out, err := run(t, "", serverSeventyNine, "mode: atomic\n"); err == nil || !strings.Contains(out, "server 79.0% < 80%") {
 		t.Fatalf("default 79%% unit profile did not fail: err=%v\n%s", err, out)
 	}
-	if out, err := run(t, "", "mode: atomic\n", allThreeEighty); err == nil || !strings.Contains(out, "irimap: no statements in the unit profile") || !strings.Contains(out, "reader: no statements in the unit profile") || !strings.Contains(out, "sparql: no statements in the unit profile") {
+	if out, err := run(t, "", "mode: atomic\n", allFourEighty); err == nil || !strings.Contains(out, "irimap: no statements in the unit profile") || !strings.Contains(out, "reader: no statements in the unit profile") || !strings.Contains(out, "sparql: no statements in the unit profile") || !strings.Contains(out, "server: no statements in the unit profile") {
 		t.Fatalf("default missing unit statements did not fail: err=%v\n%s", err, out)
 	}
 

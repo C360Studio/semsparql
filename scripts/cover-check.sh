@@ -22,6 +22,7 @@ default_targets=(
   "irimap unit"
   "reader unit"
   "sparql unit"
+  "server unit"
 )
 if [ -n "${COVER_TARGETS:-}" ]; then
   targets=()
