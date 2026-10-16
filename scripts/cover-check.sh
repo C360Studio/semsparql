@@ -21,6 +21,7 @@ readonly module=github.com/c360studio/semsparql
 default_targets=(
   "irimap unit"
   "reader unit"
+  "sparql unit"
 )
 if [ -n "${COVER_TARGETS:-}" ]; then
   targets=()

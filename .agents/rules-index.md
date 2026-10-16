@@ -10,10 +10,12 @@ added `irimap` (`TestIRIMapperRoundTrip`, `TestPropIRIMapperRoundTrip`, `TestIRI
 `TestBlankNodeIDMultiValued`, and `FuzzIRIToEntityID`); Task 1.2 added `reader` (`GraphReader`, `MemoryReader`,
 `TestMemoryReaderEmptySentinelDistinction`, `TestMemoryReaderInvalidInput`,
 `TestMemoryReaderMissingEntitiesAndImmutability`, `TestMemoryReaderDeterministicIDSets`,
-`TestMemoryReaderBudgetAwareScans`, `TestPropMemoryReaderPatternAndPrefix`, and `FuzzMemoryReaderSelectors`). Where
-issue #1 names a runtime proving test not yet in the tree, the row lists it as *planned*: a planned test is not
-enforcement until it is in the tree and run by `task verify`. A change that can turn a "review only" row into a failing
-command should, and updates this row and the `AGENTS.md` gate in the same change.
+`TestMemoryReaderBudgetAwareScans`, `TestPropMemoryReaderPatternAndPrefix`, and `FuzzMemoryReaderSelectors`); Task 2.1
+added `sparql` AST and parser (`TestParseSPARQLSupportedSubset`, `TestUnsupportedFeatureErrors`,
+`TestParseSPARQLSyntaxErrors`, `TestPropParseSPARQLGeneratedQueries`, and `FuzzParseSPARQL`). Where issue #1 names a
+runtime proving test not yet in the tree, the row lists it as *planned*: a planned test is not enforcement until it is
+in the tree and run by `task verify`. A change that can turn a "review only" row into a failing command should, and
+updates this row and the `AGENTS.md` gate in the same change.
 
 ## 1. Read-only boundary and upstream
 
@@ -46,7 +48,7 @@ command should, and updates this row and the `AGENTS.md` gate in the same change
 | Sort and deduplicate complete entity-ID and RDF-term sets before a limit; SPARQL solutions keep duplicates unless `DISTINCT`/`REDUCED` (SPARQL 1.1 §15.3) and are ordered deterministically before `LIMIT`/`OFFSET` | developer contract § Semantic identity; reviewer contract § Read-only boundary and query review | `TestMemoryReaderDeterministicIDSets` and `TestPropMemoryReaderPatternAndPrefix` (`reader/reader_test.go`, in `task verify`) for sorted/deduplicated entity-ID sets in `MemoryReader`; planned: `TestScanPatternReaderParity` (task 4.1) across NATS cursor pages and a duplicate-preserving `UNION` case in executor tests (task 2.2) |
 | Never report partial replay, index or result state as ready or complete | developer contract § Guarantee and signal contracts | review only |
 | Limits give deterministic errors, no silent truncation unless opted in; `?s ?p ?o` stopped by the scan budget | developer contract § Read-only boundary and query limits; issue #1 §2.6 | `TestMemoryReaderBudgetAwareScans` (`reader/reader_test.go`, in `task verify`) for reader scan budgets; planned: `TestQueryLimits` (task 2.2/2.3) for executor/HTTP query limits |
-| Out-of-scope SPARQL returns a 400 naming the feature | developer and reviewer contracts; issue #1 §2.5 | review only; planned: `TestUnsupportedFeatureErrors` (task 2.3) |
+| Out-of-scope SPARQL returns a 400 naming the feature | developer and reviewer contracts; issue #1 §2.5 | `TestUnsupportedFeatureErrors` (`sparql/parser_test.go`, in `task verify`) for parser rejection naming every out-of-scope feature (`ErrUnsupportedFeature` / `errs.ErrorInvalid`); HTTP 400 wire status mapping is planned (task 2.3) |
 | Localhost bind by default; non-local bind needs a bearer token or mTLS | developer contract § Read-only boundary and query limits; reviewer contract (`BLOCKING`); issue #1 §2.6 | review only; planned: a server test refusing a non-local bind without credentials (task 2.3) |
 
 ## 4. Testing and verification
@@ -58,8 +60,8 @@ command should, and updates this row and the `AGENTS.md` gate in the same change
 | No `Skip`/`Skipf`/`SkipNow`; no build tag other than `integration` | `docs/testing.md`; developer contract | `TestNoSkippedTests`, `TestNoSkippedTestsSensitivity`, `TestNoHiddenTests`, and `TestNoHiddenTestsSensitivity` (`internal/harness/contract/testtext_test.go`, in `task verify`); helper indirection and filename platform suffixes are review only |
 | Test cleanup never stops, closes, or terminates under an unbounded context | `docs/testing.md`; developer contract § Context ownership | `scripts/cleanup-roots-check.sh` in `task cleanup-roots:check` (`task verify`) and `TestCleanupRootsCheckSensitivity` (`internal/harness/contract/cleanuproots_test.go`); multi-line or indirect calls are review only |
 | Independent oracle; tests shown able to fail | `docs/testing.md` "Show that the test can fail"; developer and reviewer contracts | review only |
-| Every external-input parser ships a `Fuzz*` target with accepted and rejected seed classes | developer contract § Test and operational fidelity; reviewer contract § Test fidelity | `FuzzIRIToEntityID` (`irimap/mapper_test.go`) and `FuzzMemoryReaderSelectors` (`reader/reader_test.go`, in `task verify`); other external-input parsers are review only (planned: `FuzzParseSPARQL` in task 2.1) |
-| Generated-check decision recorded; Rapid seed and checks completed recorded; histories against a reference model | `docs/testing.md` "Decide whether generated checks are needed", "Running and replaying a Rapid test" | `TestPropIRIMapperRoundTrip` (`irimap/mapper_test.go`) and `TestPropMemoryReaderPatternAndPrefix` (`reader/reader_test.go`, in `task verify`); recording of decision/seed/checks is review only; planned: folding equivalence (task 3.2) |
+| Every external-input parser ships a `Fuzz*` target with accepted and rejected seed classes | developer contract § Test and operational fidelity; reviewer contract § Test fidelity | `FuzzIRIToEntityID` (`irimap/mapper_test.go`), `FuzzMemoryReaderSelectors` (`reader/reader_test.go`), and `FuzzParseSPARQL` (`sparql/parser_test.go`, in `task verify`); HTTP parameter/body parsers are planned (task 2.3/3.3) |
+| Generated-check decision recorded; Rapid seed and checks completed recorded; histories against a reference model | `docs/testing.md` "Decide whether generated checks are needed", "Running and replaying a Rapid test" | `TestPropIRIMapperRoundTrip` (`irimap/mapper_test.go`), `TestPropMemoryReaderPatternAndPrefix` (`reader/reader_test.go`), and `TestPropParseSPARQLGeneratedQueries` (`sparql/parser_test.go`, in `task verify`); recording of decision/seed/checks is review only; planned: folding equivalence (task 3.2) |
 | Mutation checks report observed outcomes; in-tree wrong changes use `cp` backup and verified SHA-256 restore | developer contract § Required workflow; `docs/testing.md` "Show that the test can fail" | review only (SemSparql has no `task mutate:check`) |
 | NATS key, filter and query-verb claims proven against a real NATS server and graph-ingest | developer contract § Semantic identity | review only; planned: integration fixture (task 4.2) |
 | Never run a git command that can discard working-tree state | developer, reviewer and architect contracts | review only |
