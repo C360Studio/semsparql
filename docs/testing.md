@@ -232,7 +232,7 @@ read the number of checks actually completed from the tool's output. Record:
 Rapid's flags exist only in a package that imports Rapid, so name that package rather than `./...`:
 
 ```bash
-go test ./irimap -run '^TestPropIRIRoundTrip$' -count=1 -race -v -rapid.checks=100 -rapid.seed=1320
+go test ./irimap -run '^TestPropIRIMapperRoundTrip$' -count=1 -race -v -rapid.checks=100 -rapid.seed=1320
 ```
 
 `-rapid.checks` sets how many cases to try (default 100) and `-rapid.seed` fixes the seed; `-rapid.seed=0` asks for a
@@ -290,8 +290,10 @@ Two more rules apply to every shape:
 
 ## Budgets and failure evidence
 
-Nothing is enforced yet. Coverage thresholds, the integration timeout and per-step timing in `task verify` arrive with
-task 0.1 and later tasks; until then, state in the pull request what you ran and how long it took.
+`task verify` (`scripts/verify.sh`) enforces the 80% statement coverage threshold across all five runtime packages
+(`irimap`, `reader`, `sparql`, `server`, and `cmd/semsparql` via `task cover:check`), the 10-minute integration test
+timeout (`task test:integration`), and per-step timing output. State in the pull request what you ran and how long it
+took.
 
 When a test waits on asynchronous or external state and fails, its message should name the condition, the elapsed
 time, the attempts, the last value seen and the last error. A test that uses randomness prints its seed. A test of a

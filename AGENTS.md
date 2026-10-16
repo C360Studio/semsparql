@@ -162,8 +162,10 @@ A new repo-wide or agent-conduct rule updates both this file and `.agents/rules-
 - **Milestones:** what gates a release.
 - **Draft PRs:** claims; `Closes #n` for a leaf issue, `Addresses #n` for an epic.
 - **`openspec/changes/<id>/`:** target state (proposal, design, tasks, holds), archived on completion. Issue #1's
-  plan becomes `openspec/changes/bootstrap-semsparql-sidecar/`.
-- **`openspec/specs/<capability>/`:** current truth, verified against code before it is written.
+  plan (`bootstrap-semsparql-sidecar`) is archived under `openspec/changes/archive/` with proven behavior promoted to
+  `openspec/specs/`.
+- **`openspec/specs/<capability>/`:** current truth (`bgp-planner`, `iri-mapping`, `reification-bridge`,
+  `sparql-protocol`), verified against code before it is written.
 - **ADRs:** why; irreversible choices and cross-repo contracts. SemEngine's ADRs (ADR-102 entity IDs, ADR-107 export
   edge) bind where this repository consumes their surface.
 

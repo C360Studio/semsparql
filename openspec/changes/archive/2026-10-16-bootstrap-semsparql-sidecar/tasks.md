@@ -20,8 +20,8 @@ complete-chain `ProjectionSpec` folding and virtual-unfolded fallback, `UnfoldEn
 `ErrUnsafeExposure`, `ErrQueryTooLarge`, `ErrExportBodyTooLarge`), `cmd/semsparql`, and the `-tags=integration`
 live NATS/DIEKM end-to-end suite (`server/diekm_integration_test.go`, `TestIntegrationDIEKMEndToEndSuite` and
 `TestPropIntegrationDIEKMLiveServerParity`) and their unit/property/fuzz/integration proving tests run in `task verify`
-and `task cover:check`, and `AGENTS.md` and `.agents/rules-index.md` are reconciled.
-Remaining archive/reconciliation task `6.1` proceeds when ready to archive.
+and `task cover:check`, `AGENTS.md` and `.agents/rules-index.md` are reconciled, and Task `6.1` reconciles and archives
+`bootstrap-semsparql-sidecar` into `openspec/specs/**`.
 
 ## Design readiness
 
@@ -105,6 +105,6 @@ Remaining archive/reconciliation task `6.1` proceeds when ready to archive.
 
 ## 6. Reconciliation
 
-- [ ] 6.1 After implemented scope and optional disposition are complete, reconcile task truth and docs, verify
+- [x] 6.1 After implemented scope and optional disposition are complete, reconcile task truth and docs, verify
   the runtime, then archive this change and promote only behavior proven by code to openspec/specs.
   Do not archive merely because the draft documentation is complete; final CI/merge checks belong on the PR.
