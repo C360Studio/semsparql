@@ -24,6 +24,7 @@ import (
 	"github.com/c360studio/semengine/vocabulary"
 	"github.com/c360studio/semsparql/irimap"
 	"github.com/c360studio/semsparql/reader"
+	"github.com/c360studio/semsparql/sparql"
 )
 
 const testBaseIRI = "https://semengine.local"
@@ -695,6 +696,19 @@ func TestServerAuthAndBindValidation(t *testing.T) {
 	respAuth.Body.Close()
 	if respAuth.StatusCode != http.StatusOK {
 		t.Fatalf("auth status = %d, want 200", respAuth.StatusCode)
+	}
+
+	// 5. Incomplete registered entity-type superclass closure fails server.New at startup.
+	vocabulary.RegisterEntityType("uxs.vehicle",
+		vocabulary.WithClassIRI("https://www.commoncoreontologies.org/ont00000713"),
+		vocabulary.WithSuperclass("http://purl.obolibrary.org/obo/BFO_0000030"),
+	)
+	vocabulary.RegisterEntityType("intel.platform",
+		vocabulary.WithClassIRI("https://w3id.org/c360/diekm#IntelligencePlatform"),
+		vocabulary.WithSuperclass("https://www.commoncoreontologies.org/ont00000713"),
+	)
+	if _, err := New(mr, Config{}); !errors.Is(err, sparql.ErrIncompleteSuperclassClosure) {
+		t.Fatalf("New with incomplete superclass closure = %v, want ErrIncompleteSuperclassClosure", err)
 	}
 }
 

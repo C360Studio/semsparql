@@ -117,6 +117,9 @@ func New(r reader.GraphReader, cfg Config) (*Server, error) {
 	if err := ValidateConfig(cfg); err != nil {
 		return nil, err
 	}
+	if err := sparql.ValidateSuperclassClosure(); err != nil {
+		return nil, err
+	}
 
 	mapper := irimap.NewMapper(cfg.BaseIRI)
 	exec := sparql.NewExecutor(r, sparql.Config{

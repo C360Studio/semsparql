@@ -2,16 +2,18 @@
 
 These are the implementation tasks from issue #1. Each numbered issue task is one reviewable PR. Dependencies run
 0 → 1 → 2 → 3 → 4, with the MVP at 2.3. The source issue remains open. Tasks 0.1, 0.2, D.1, D.2, 1.1, 1.2, 2.1, 2.2,
-2.3, and 5.1 (disposition) are complete: `go.mod` pins `semengine v0.1.0-alpha.2` and `semvocab v0.1.0`, the Go
+2.3, 3.1, and 5.1 (disposition) are complete: `go.mod` pins `semengine v0.1.0-alpha.2` and `semvocab v0.1.0`, the Go
 verification gates and `internal/harness/contract` structural guards and D.2 upstream probes run in `task verify`, owner
 consumer-contract rulings D.1a–D.1e are recorded in `design.md` and `specs/**`, `irimap` (`Mapper`,
 `CanonicalNTriplesObject`, `BlankNodeID`), `reader` (`GraphReader`, `MemoryReader`, `MatchAllPattern`, `ErrNilContext`,
-`ErrEntityNotFound`, `ErrScanBudgetExceeded`), `sparql` AST/parser and plain-BGP `SELECT`/`ASK` planner/executor
-(`Parse`, `Query`, `PlanBGP`, `Executor`, `ErrSyntax`, `ErrUnsupportedFeature`, `ErrResultLimitExceeded`,
-`ErrScanBudgetExceeded`, `ErrQueryTimeout`), and `server` `/sparql` `SELECT`/`ASK` MVP (`Server`, `Config`,
+`ErrEntityNotFound`, `ErrScanBudgetExceeded`), `sparql` AST/parser, virtual `rdf:type`/`rdfs:subClassOf*` resolution,
+and plain-BGP `SELECT`/`ASK` planner/executor (`Parse`, `Query`, `PlanBGP`, `PlanBGPWithScope`, `Executor`,
+`ValidateSuperclassClosure`, `TypeScanPatternsForClass`, `VirtualTypeIRIsForEntityID`, `SuperclassesForClassIRI`,
+`SubClassClosurePairs`, `ErrSyntax`, `ErrUnsupportedFeature`, `ErrResultLimitExceeded`, `ErrScanBudgetExceeded`,
+`ErrQueryTimeout`, `ErrIncompleteSuperclassClosure`), and `server` `/sparql` `SELECT`/`ASK` MVP (`Server`, `Config`,
 `ValidateConfig`, `NegotiateAccept`, `WriteSelectAskResult`, `ErrNotAcceptable`, `ErrUnsafeExposure`,
 `ErrQueryTooLarge`) and their unit/property/fuzz proving tests run in `task verify` and `task cover:check`, and
-`AGENTS.md` and `.agents/rules-index.md` are reconciled. Remaining runtime tasks `3.1`–`4.2` proceed in phase order.
+`AGENTS.md` and `.agents/rules-index.md` are reconciled. Remaining runtime tasks `3.2`–`4.2` proceed in phase order.
 
 ## Design readiness
 
@@ -58,7 +60,7 @@ consumer-contract rulings D.1a–D.1e are recorded in `design.md` and `specs/**`
 
 ## 3. Virtual RDF and graph output
 
-- [ ] 3.1 Implement virtual rdf:type/subclass resolution and startup ancestor-closure validation. Prove
+- [x] 3.1 Implement virtual rdf:type/subclass resolution and startup ancestor-closure validation. Prove
   TestVirtualRDFTypeAndSubclassResolution and TestSuperclassClosureStartupCheck, including wildcard systems,
   unbound classes, zero-length paths, standalone `rdfs:subClassOf*` over the registered class closure (D.1c) and
   explicit/virtual graph-set merging.

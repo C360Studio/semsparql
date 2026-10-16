@@ -88,13 +88,17 @@ type Result struct {
 
 // Config configures a SPARQL Executor. Zero values for Timeout, MaxResults, and
 // MaxScanEntities use DefaultQueryTimeout (10s), DefaultMaxResults (10,000), and
-// DefaultMaxScanEntities (100,000) respectively.
+// DefaultMaxScanEntities (100,000) respectively. Org and Platform optionally scope
+// bound-class pattern scans (`<org>.<platform>.*.<domain>.<type>.*`), defaulting
+// to `*` wildcards when empty.
 type Config struct {
 	Mapper          *irimap.Mapper
 	Timeout         time.Duration
 	MaxResults      int
 	MaxScanEntities int
 	AllowTruncation bool
+	Org             string
+	Platform        string
 }
 
 // EvalOption configures a single Execute / ExecuteQuery invocation.
@@ -102,6 +106,8 @@ type EvalOption func(*evalOptions)
 
 type evalOptions struct {
 	allowTruncation *bool
+	org             *string
+	platform        *string
 }
 
 // WithAllowTruncation overrides Config.AllowTruncation for a single query execution
@@ -109,6 +115,15 @@ type evalOptions struct {
 func WithAllowTruncation(allow bool) EvalOption {
 	return func(o *evalOptions) {
 		o.allowTruncation = &allow
+	}
+}
+
+// WithOrgPlatform overrides Config.Org and Config.Platform for a single query
+// execution when scoping bound-class pattern scans.
+func WithOrgPlatform(org, platform string) EvalOption {
+	return func(o *evalOptions) {
+		o.org = &org
+		o.platform = &platform
 	}
 }
 
@@ -172,6 +187,14 @@ func (e *Executor) Execute(ctx context.Context, q *Query, opts ...EvalOption) (*
 	if eo.allowTruncation != nil {
 		allowTruncation = *eo.allowTruncation
 	}
+	org := e.cfg.Org
+	if eo.org != nil {
+		org = *eo.org
+	}
+	platform := e.cfg.Platform
+	if eo.platform != nil {
+		platform = *eo.platform
+	}
 
 	timeout := e.cfg.Timeout
 	if timeout <= 0 {
@@ -196,6 +219,8 @@ func (e *Executor) Execute(ctx context.Context, q *Query, opts ...EvalOption) (*
 		maxResults:      maxResults,
 		budgetRemaining: maxScan,
 		allowTruncation: allowTruncation,
+		org:             org,
+		platform:        platform,
 	}
 
 	if err := state.checkContext(); err != nil {
@@ -222,6 +247,8 @@ type execState struct {
 	allowTruncation  bool
 	truncated        bool
 	truncationReason string
+	org              string
+	platform         string
 }
 
 func (s *execState) markTruncated(reason string) {
@@ -534,7 +561,7 @@ func (s *execState) evalBGP(bgp BGPPattern, current []Solution) ([]Solution, err
 
 	// Pre-check static emptiness before touching GraphReader.
 	for _, tp := range bgp.Triples {
-		step := classifySinglePattern(tp, s.mapper)
+		step := classifySinglePatternWithScope(tp, s.mapper, s.org, s.platform)
 		if step.Kind == AccessEmpty {
 			return nil, nil
 		}
@@ -547,7 +574,7 @@ func (s *execState) evalBGP(bgp BGPPattern, current []Solution) ([]Solution, err
 		if err := s.checkContext(); err != nil {
 			return nil, err
 		}
-		bestIdx := pickNextPatternIndex(remaining, solutions, s.mapper)
+		bestIdx := pickNextPatternIndex(remaining, solutions, s.mapper, s.org, s.platform)
 		tp := remaining[bestIdx]
 		remaining = slices.Delete(remaining, bestIdx, bestIdx+1)
 
@@ -561,11 +588,11 @@ func (s *execState) evalBGP(bgp BGPPattern, current []Solution) ([]Solution, err
 	return solutions, nil
 }
 
-func pickNextPatternIndex(remaining []TriplePattern, solutions []Solution, mapper *irimap.Mapper) int {
+func pickNextPatternIndex(remaining []TriplePattern, solutions []Solution, mapper *irimap.Mapper, org, platform string) int {
 	bestIdx := 0
-	bestRank := dynamicPatternRank(remaining[0], solutions, mapper)
+	bestRank := dynamicPatternRank(remaining[0], solutions, mapper, org, platform)
 	for i := 1; i < len(remaining); i++ {
-		r := dynamicPatternRank(remaining[i], solutions, mapper)
+		r := dynamicPatternRank(remaining[i], solutions, mapper, org, platform)
 		if r < bestRank {
 			bestIdx = i
 			bestRank = r
@@ -574,13 +601,22 @@ func pickNextPatternIndex(remaining []TriplePattern, solutions []Solution, mappe
 	return bestIdx
 }
 
-func dynamicPatternRank(tp TriplePattern, solutions []Solution, mapper *irimap.Mapper) int {
-	step := classifySinglePattern(tp, mapper)
+func dynamicPatternRank(tp TriplePattern, solutions []Solution, mapper *irimap.Mapper, org, platform string) int {
+	step := classifySinglePatternWithScope(tp, mapper, org, platform)
+	if step.Kind == AccessEmpty {
+		return 0
+	}
+	if tp.IsStandaloneSubClassPath() {
+		return int(AccessExactEntity)*10 - 5
+	}
 	if step.Kind <= AccessExactEntity {
 		return int(step.Kind) * 10
 	}
 	if allSubjectsBound(tp.Subject, solutions) {
 		return int(AccessExactEntity)*10 + 5
+	}
+	if step.Kind > AccessTypePattern && (tp.IsPlainRDFType() || tp.IsRDFTypeWithSubClassPath()) && allObjectsBoundToIRIs(tp.Object, solutions) {
+		return int(AccessTypePattern)*10 + 5
 	}
 	return int(step.Kind) * 10
 }
@@ -601,8 +637,29 @@ func allSubjectsBound(subj Term, solutions []Solution) bool {
 	return true
 }
 
+func allObjectsBoundToIRIs(obj Term, solutions []Solution) bool {
+	if obj.Kind == TermIRI {
+		return true
+	}
+	key, ok := bindingKey(obj)
+	if !ok || len(solutions) == 0 {
+		return false
+	}
+	for _, sol := range solutions {
+		bound, exists := sol[key]
+		if !exists || bound.Kind != TermIRI {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *execState) evalTriplePattern(tp TriplePattern, solutions []Solution) ([]Solution, error) {
-	step := classifySinglePattern(tp, s.mapper)
+	if tp.IsStandaloneSubClassPath() {
+		return s.evalStandaloneSubClassPath(tp, solutions)
+	}
+
+	step := classifySinglePatternWithScope(tp, s.mapper, s.org, s.platform)
 	if step.Kind == AccessEmpty {
 		return nil, nil
 	}
@@ -611,11 +668,21 @@ func (s *execState) evalTriplePattern(tp TriplePattern, solutions []Solution) ([
 		return s.evalBoundSubjectPattern(tp, step.Predicates, solutions)
 	}
 
+	if step.Kind == AccessFullScan && (tp.IsPlainRDFType() || tp.IsRDFTypeWithSubClassPath()) && allObjectsBoundToIRIs(tp.Object, solutions) {
+		upgraded, ok := s.resolveBoundObjectTypePatterns(tp.Object, step, solutions)
+		if !ok {
+			return nil, nil
+		}
+		step = upgraded
+	}
+
 	var (
 		entities []graph.EntityState
 		err      error
 	)
 	switch step.Kind {
+	case AccessTypePattern:
+		entities, err = s.readEntitiesByPatterns(step.Patterns)
 	case AccessPredicate:
 		entities, err = s.readEntitiesByPredicates(step.Predicates)
 	default:
@@ -657,6 +724,94 @@ func (s *execState) evalTriplePattern(tp TriplePattern, solutions []Solution) ([
 		}
 	}
 	return next, nil
+}
+
+func (s *execState) resolveBoundObjectTypePatterns(obj Term, step PlanStep, solutions []Solution) (PlanStep, bool) {
+	var patterns []string
+	hasUnregistered := false
+	for _, sol := range solutions {
+		resolved := resolveTerm(obj, sol)
+		if resolved.Kind != TermIRI {
+			continue
+		}
+		pats, err := TypeScanPatternsForClass(resolved.Value, s.org, s.platform)
+		if err != nil {
+			return step, false
+		}
+		if len(pats) == 0 {
+			hasUnregistered = true
+		} else {
+			patterns = append(patterns, pats...)
+		}
+	}
+	slices.Sort(patterns)
+	patterns = slices.Compact(patterns)
+	if len(patterns) > 0 && !hasUnregistered {
+		step.Kind = AccessTypePattern
+		step.Patterns = patterns
+		return step, true
+	}
+	if len(patterns) == 0 && hasUnregistered {
+		step.Kind = AccessPredicate
+		return step, true
+	}
+	return step, true
+}
+
+func (s *execState) evalStandaloneSubClassPath(tp TriplePattern, solutions []Solution) ([]Solution, error) {
+	if tp.Subject.Kind == TermLiteral || tp.Object.Kind == TermLiteral {
+		return nil, nil
+	}
+	next := make([]Solution, 0)
+	for _, sol := range solutions {
+		if err := s.checkContext(); err != nil {
+			return nil, err
+		}
+		subIRI, okSub := boundIRIFromPatternTerm(tp.Subject, sol)
+		supIRI, okSup := boundIRIFromPatternTerm(tp.Object, sol)
+		if !okSub || !okSup {
+			continue
+		}
+		pairs := SubClassClosurePairs(subIRI, supIRI)
+		var stopped bool
+		for _, pair := range pairs {
+			rt := rdfTriple{
+				Subject:   Term{Kind: TermIRI, Value: pair[0]},
+				Predicate: Term{Kind: TermIRI, Value: RDFSSubClassOfIRI},
+				Object:    Term{Kind: TermIRI, Value: pair[1]},
+			}
+			if ext, ok := matchTriplePattern(tp, rt, sol); ok {
+				stop, err := s.appendSolution(&next, ext)
+				if err != nil {
+					return nil, err
+				}
+				if stop {
+					stopped = true
+					break
+				}
+			}
+		}
+		if stopped {
+			break
+		}
+	}
+	return next, nil
+}
+
+func boundIRIFromPatternTerm(t Term, sol Solution) (string, bool) {
+	if key, ok := bindingKey(t); ok {
+		if bound, exists := sol[key]; exists {
+			if bound.Kind != TermIRI {
+				return "", false
+			}
+			return bound.Value, true
+		}
+		return "", true
+	}
+	if t.Kind == TermIRI {
+		return t.Value, true
+	}
+	return "", false
 }
 
 func (s *execState) evalBoundSubjectPattern(tp TriplePattern, candidatePreds []string, solutions []Solution) ([]Solution, error) {
@@ -828,6 +983,50 @@ func (s *execState) readEntitiesByPredicates(predicates []string) ([]graph.Entit
 	return out, nil
 }
 
+func (s *execState) readEntitiesByPatterns(patterns []string) ([]graph.EntityState, error) {
+	byID := make(map[string]graph.EntityState)
+	for _, pattern := range patterns {
+		if err := s.checkContext(); err != nil {
+			return nil, err
+		}
+		if s.budgetRemaining <= 0 {
+			if s.allowTruncation {
+				s.markTruncated(TruncationReasonScanBudget)
+				break
+			}
+			return nil, newScanBudgetError(reader.ErrScanBudgetExceeded)
+		}
+		ents, err := s.reader.ScanPattern(s.ctx, pattern, s.budgetRemaining)
+		if err != nil {
+			stop, rerr := s.translateReaderError(err)
+			if rerr != nil {
+				return nil, rerr
+			}
+			if stop {
+				break
+			}
+		}
+		s.budgetRemaining -= len(ents)
+		s.entitiesScanned += len(ents)
+		for i := range ents {
+			byID[ents[i].ID] = ents[i]
+		}
+	}
+	if len(byID) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(byID))
+	for id := range byID {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	out := make([]graph.EntityState, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, byID[id])
+	}
+	return out, nil
+}
+
 func (s *execState) readAllEntities() ([]graph.EntityState, error) {
 	if err := s.checkContext(); err != nil {
 		return nil, err
@@ -862,8 +1061,26 @@ func (s *execState) entityToRDFTriples(entity *graph.EntityState, filterPredicat
 	defaultSubj := Term{Kind: TermIRI, Value: subjIRI}
 	baseIRI := s.mapper.BaseIRI()
 
-	seen := make(map[rdfTriple]struct{}, len(entity.Triples))
-	out := make([]rdfTriple, 0, len(entity.Triples))
+	seen := make(map[rdfTriple]struct{}, len(entity.Triples)+4)
+	out := make([]rdfTriple, 0, len(entity.Triples)+4)
+	addTriple := func(rt rdfTriple) {
+		if _, dup := seen[rt]; !dup {
+			seen[rt] = struct{}{}
+			out = append(out, rt)
+		}
+	}
+
+	includeRDFType := len(filterPredicates) == 0 || slices.Contains(filterPredicates, RDFTypeIRI)
+	if includeRDFType {
+		rdfTypeTerm := Term{Kind: TermIRI, Value: RDFTypeIRI}
+		for _, clsIRI := range VirtualTypeIRIsForEntityID(entity.ID) {
+			addTriple(rdfTriple{
+				Subject:   defaultSubj,
+				Predicate: rdfTypeTerm,
+				Object:    Term{Kind: TermIRI, Value: clsIRI},
+			})
+		}
+	}
 
 	for _, tr := range entity.Triples {
 		if len(filterPredicates) > 0 && !slices.Contains(filterPredicates, tr.Predicate) {
@@ -885,14 +1102,19 @@ func (s *execState) entityToRDFTriples(entity *graph.EntityState, filterPredicat
 		if !ok {
 			continue
 		}
-		rt := rdfTriple{
+		addTriple(rdfTriple{
 			Subject:   subjTerm,
 			Predicate: predTerm,
 			Object:    objTerm,
-		}
-		if _, dup := seen[rt]; !dup {
-			seen[rt] = struct{}{}
-			out = append(out, rt)
+		})
+		if predTerm.Kind == TermIRI && predTerm.Value == RDFTypeIRI && objTerm.Kind == TermIRI {
+			for _, supIRI := range SuperclassesForClassIRI(objTerm.Value) {
+				addTriple(rdfTriple{
+					Subject:   subjTerm,
+					Predicate: predTerm,
+					Object:    Term{Kind: TermIRI, Value: supIRI},
+				})
+			}
 		}
 	}
 	return out, nil
@@ -1022,8 +1244,19 @@ func matchTriplePattern(tp TriplePattern, rt rdfTriple, sol Solution) (Solution,
 	if !bindOrMatchTerm(tp.Subject, rt.Subject, ext) {
 		return nil, false
 	}
-	if !bindOrMatchTerm(tp.Predicate, rt.Predicate, ext) {
-		return nil, false
+	switch tp.Path {
+	case PathRDFTypeSubClassOfStar:
+		if rt.Predicate.Kind != TermIRI || rt.Predicate.Value != RDFTypeIRI {
+			return nil, false
+		}
+	case PathSubClassOfStar:
+		if rt.Predicate.Kind != TermIRI || rt.Predicate.Value != RDFSSubClassOfIRI {
+			return nil, false
+		}
+	default:
+		if !bindOrMatchTerm(tp.Predicate, rt.Predicate, ext) {
+			return nil, false
+		}
 	}
 	if !bindOrMatchTerm(tp.Object, rt.Object, ext) {
 		return nil, false

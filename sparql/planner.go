@@ -53,6 +53,7 @@ type PlanStep struct {
 	Kind       AccessKind
 	EntityID   string
 	Predicates []string
+	Patterns   []string
 }
 
 // BGPPlan is the ordered execution plan for a Basic Graph Pattern.
@@ -82,6 +83,13 @@ func LookupPredicateCandidates(predicateIRI string) []string {
 // (exact entity -> type pattern -> predicate selection -> bounded full scan),
 // accounting for variables bound by earlier steps in the plan.
 func PlanBGP(bgp BGPPattern, mapper *irimap.Mapper) BGPPlan {
+	return PlanBGPWithScope(bgp, mapper, "", "")
+}
+
+// PlanBGPWithScope orders the triple patterns of bgp using constrained-access
+// priority, scoping bound-class pattern scans to `<org>.<platform>.*.<domain>.<type>.*`
+// (substituting `*` when org or platform is empty).
+func PlanBGPWithScope(bgp BGPPattern, mapper *irimap.Mapper, org, platform string) BGPPlan {
 	if mapper == nil {
 		mapper = irimap.NewMapper("")
 	}
@@ -91,9 +99,9 @@ func PlanBGP(bgp BGPPattern, mapper *irimap.Mapper) BGPPlan {
 
 	for len(remaining) > 0 {
 		bestIdx := 0
-		bestStep, bestRank := classifyStaticPattern(remaining[0], boundVars, mapper)
+		bestStep, bestRank := classifyStaticPattern(remaining[0], boundVars, mapper, org, platform)
 		for i := 1; i < len(remaining); i++ {
-			step, rank := classifyStaticPattern(remaining[i], boundVars, mapper)
+			step, rank := classifyStaticPattern(remaining[i], boundVars, mapper, org, platform)
 			if rank < bestRank {
 				bestIdx = i
 				bestStep = step
@@ -108,8 +116,16 @@ func PlanBGP(bgp BGPPattern, mapper *irimap.Mapper) BGPPlan {
 	return BGPPlan{Steps: steps}
 }
 
-func classifyStaticPattern(tp TriplePattern, boundVars map[string]bool, mapper *irimap.Mapper) (PlanStep, int) {
-	step := classifySinglePattern(tp, mapper)
+func classifyStaticPattern(tp TriplePattern, boundVars map[string]bool, mapper *irimap.Mapper, org, platform string) (PlanStep, int) {
+	step := classifySinglePatternWithScope(tp, mapper, org, platform)
+	if step.Kind == AccessEmpty {
+		return step, 0
+	}
+	// Standalone rdfs:subClassOf* evaluates over the finite in-memory vocabulary
+	// ontology graph without touching GraphReader, so run it before reader scans.
+	if tp.IsStandaloneSubClassPath() {
+		return step, int(AccessExactEntity)*10 - 5
+	}
 	rank := int(step.Kind) * 10
 	// If the subject is a variable/blank node already bound by an earlier step,
 	// it will be resolved via exact-entity lookup at execution time, so prefer it
@@ -117,17 +133,77 @@ func classifyStaticPattern(tp TriplePattern, boundVars map[string]bool, mapper *
 	if step.Kind > AccessExactEntity {
 		if key, ok := bindingKey(tp.Subject); ok && boundVars[key] {
 			rank = int(AccessExactEntity)*10 + 5
+		} else if step.Kind > AccessTypePattern && (tp.IsPlainRDFType() || tp.IsRDFTypeWithSubClassPath()) {
+			if objKey, ok := bindingKey(tp.Object); ok && boundVars[objKey] {
+				rank = int(AccessTypePattern)*10 + 5
+			}
 		}
 	}
 	return step, rank
 }
 
 func classifySinglePattern(tp TriplePattern, mapper *irimap.Mapper) PlanStep {
+	return classifySinglePatternWithScope(tp, mapper, "", "")
+}
+
+func classifySinglePatternWithScope(tp TriplePattern, mapper *irimap.Mapper, org, platform string) PlanStep {
 	step := PlanStep{Pattern: tp}
 
-	// Property paths (Task 3.1) are not ordinary flat triples.
+	// Standalone `?sub rdfs:subClassOf* ?sup` (owner ruling D.1c) evaluates over
+	// the finite registered ontology class graph in vocabulary.
+	if tp.IsStandaloneSubClassPath() {
+		if tp.Subject.Kind == TermLiteral || tp.Object.Kind == TermLiteral {
+			step.Kind = AccessEmpty
+			return step
+		}
+		step.Kind = AccessTypePattern
+		return step
+	}
+
+	// Virtual and explicit `rdf:type` and `rdf:type/rdfs:subClassOf*` patterns.
+	if tp.IsPlainRDFType() || tp.IsRDFTypeWithSubClassPath() {
+		if tp.Subject.Kind == TermLiteral || tp.Object.Kind == TermLiteral {
+			step.Kind = AccessEmpty
+			return step
+		}
+		step.Predicates = LookupPredicateCandidates(RDFTypeIRI)
+		switch tp.Subject.Kind {
+		case TermIRI:
+			eid, err := mapper.IRIToEntityID(tp.Subject.Value)
+			if err != nil {
+				step.Kind = AccessEmpty
+				return step
+			}
+			step.Kind = AccessExactEntity
+			step.EntityID = eid
+			return step
+		case TermVariable, TermBlankNode:
+			if tp.Object.Kind == TermIRI {
+				patterns, err := TypeScanPatternsForClass(tp.Object.Value, org, platform)
+				if err != nil {
+					step.Kind = AccessEmpty
+					return step
+				}
+				if len(patterns) > 0 {
+					step.Kind = AccessTypePattern
+					step.Patterns = patterns
+					return step
+				}
+				// Class IRI matches no registered EntityTypeMetadata; only explicit
+				// stored rdf:type triples on entities can match.
+				step.Kind = AccessPredicate
+				return step
+			}
+			step.Kind = AccessFullScan
+			return step
+		default:
+			step.Kind = AccessEmpty
+			return step
+		}
+	}
+
 	if tp.Path != PathNone {
-		step.Kind = AccessFullScan
+		step.Kind = AccessEmpty
 		return step
 	}
 
@@ -161,7 +237,7 @@ func classifySinglePattern(tp TriplePattern, mapper *irimap.Mapper) PlanStep {
 		step.EntityID = eid
 		return step
 	case TermVariable, TermBlankNode:
-		if len(step.Predicates) > 0 && tp.Predicate.Value != RDFTypeIRI {
+		if len(step.Predicates) > 0 {
 			step.Kind = AccessPredicate
 			return step
 		}
