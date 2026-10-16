@@ -74,8 +74,8 @@ node deterministically from the source triple and zero-based step index:
 "_:b_" + hex(sha256(entityID + "\x00" + dottedPredicate + "\x00" + canonicalNTriplesObject + "\x00" + strconv.Itoa(stepIdx))[:16])
 ```
 
-`irimap.CanonicalNTriplesObject` obtains `canonicalNTriplesObject` by serializing a single probe triple through
-`export.SerializeToString(..., export.NTriples)` (verified at `semengine v0.1.0-alpha.2` by
+`irimap.CanonicalNTriplesPredicateAndObject` obtains `canonicalNTriplesObject` by serializing a single probe triple
+through `export.SerializeToString(..., export.NTriples)` (verified at `semengine v0.1.0-alpha.2` by
 `TestProbeCanonicalNTriplesObjectSeam` in [`internal/harness/contract/probes_test.go`](../internal/harness/contract/probes_test.go)
 and `TestBlankNodeIDMultiValued` in [`irimap/mapper_test.go`](../irimap/mapper_test.go)). Because the hash
 input uses the exporter's own N-Triples object token, `float64(1500.5)` and `1500.5` produce the same blank node across
@@ -91,7 +91,10 @@ input uses the exporter's own N-Triples object token, `float64(1500.5)` and `150
 3. `ScanPrefix(ctx, prefix, limit)` scans entities under a validated 1-to-6 segment dot-separated prefix (`c360.ops`).
 4. `ScanPattern(ctx, pattern, limit)` scans entities matching a six-slot wildcard pattern (`c360.ops.*.intel.platform.*`
    or `*.*.*.*.*.*`).
-5. `EntitiesByPredicate(ctx, predicate, limit)` returns entities carrying a specific dotted predicate.
+5. `EntitiesByPredicate(ctx, predicate, limit)` scans entities via `ScanPattern(MatchAllPattern)` (or all in-memory
+   entities on `MemoryReader`) and filters locally for entities carrying `predicate` (because SemEngine
+   `v0.1.0-alpha.2` exposes no server-side predicate-index query verb), reporting total entities examined through
+   `reader.WithScanCounter`.
 
 Every selector is validated before execution using SemEngine's shared validators (`types.ValidateEntityID`,
 `types.ValidateEntityIDPrefix`, and `types.ValidateEntityIDPattern`, verified at `semengine v0.1.0-alpha.2` by
@@ -125,17 +128,22 @@ error wrapping `sparql.ErrUnsupportedFeature` (`sparql_unsupported_feature`) nam
 ### Access priority
 
 `planBGPWithScope` in [`sparql/planner.go`](../sparql/planner.go) orders triple patterns and folded chains by
-selectivity (and the executor's dynamic step picker re-evaluates candidate selectivity using variables bound at runtime)
-so that queries avoid full scans whenever a more specific access path exists:
+selectivity (and the executor's dynamic step picker re-evaluates candidate selectivity using variables bound at runtime,
+including outer bindings pushed down into nested `{ ... }` groups and `UNION` branches as semi-join restrictions) so that
+queries avoid full scans whenever a more specific access path exists:
 
-1. **`AccessExactEntity`**: the subject is a bound entity IRI or a previous step already bound the subject variable.
+1. **`AccessExactEntity`**: the subject is a bound entity IRI or a previous step (or outer group) already bound the
+   subject variable.
 2. **`AccessTypePattern`**: the pattern is `?s rdf:type <ClassIRI>` or `?s rdf:type/rdfs:subClassOf* <ClassIRI>` and
    `<ClassIRI>` resolves through `vocabulary.ListRegisteredEntityTypes()` (or a registered `ProjectionSpec`
-   `NodeClassIRI`) to selective `<org>.<platform>.*.<domain>.<type>.*` patterns and projection predicates so non-matching
-   entities never cross NATS.
+   `NodeClassIRI`). When `<ClassIRI>` maps only to registered `domain.type` entity types, only matching
+   `<org>.<platform>.*.<domain>.<type>.*` patterns cross NATS; when `<ClassIRI>` also matches a projection step's
+   `NodeClassIRI`, `EntitiesByPredicate` additionally scans `MatchAllPattern` for the corresponding projection
+   predicates (charged against `MaxScanEntities`).
 3. **`AccessPredicate`**: the predicate is a known IRI that resolves through `vocabulary.LookupByIRI` or a registered
-   `ProjectionSpec` step/value IRI to candidate dotted predicates. Multiple dotted predicates sharing a `StandardIRI`
-   are unioned and deduplicated (`TestLookupByIRIMultiMatchUnion` in
+   `ProjectionSpec` step/value IRI to candidate dotted predicates via `EntitiesByPredicate` (which scans
+   `MatchAllPattern` and filters locally until SemEngine exposes a server-side predicate-index query verb). Multiple
+   dotted predicates sharing a `StandardIRI` are unioned and deduplicated (`TestLookupByIRIMultiMatchUnion` in
    [`sparql/executor_test.go`](../sparql/executor_test.go)).
 4. **`AccessFullScan`**: unconstrained patterns such as `?s ?p ?o` are rejected at plan time with
    `sparql.ErrUnconstrainedScan` unless bounded by a selective peer pattern in the same BGP.

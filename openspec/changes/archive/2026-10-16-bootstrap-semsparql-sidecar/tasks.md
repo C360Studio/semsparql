@@ -6,18 +6,16 @@ These are the implementation tasks from issue #1. Each numbered issue task is on
 `semvocab v0.1.0`, the Go verification gates and `internal/harness/contract` structural guards and D.2 upstream probes
 run in `task verify`, owner
 consumer-contract rulings D.1a–D.1e are recorded in `design.md` and `specs/**`, `irimap` (`Mapper`,
-`CanonicalNTriplesObject`, `BlankNodeID`), `reader` (`GraphReader`, `MemoryReader`, `NATSRPCReader`,
-`ClassifiedRequester`, `MatchAllPattern`, `ErrNilContext`, `ErrEntityNotFound`, `ErrScanBudgetExceeded`,
-`ErrPatternCapabilityUnsupported`), `sparql` AST/parser, virtual `rdf:type`/`rdfs:subClassOf*` resolution,
-complete-chain `ProjectionSpec` folding and virtual-unfolded fallback, `UnfoldEntity`, `ValidateGraphTriples`, and
-`SELECT`/`ASK`/`CONSTRUCT`/`DESCRIBE` planner/executor (`Parse`, `Query`, `FoldProjections`, `FoldedBGP`, `FoldedChain`,
-`ProjectionPredicatesForStepIRI`, `ProjectionPredicatesForNodeClass`, `AllProjectedPredicates`, `PlanBGP`,
-`PlanBGPWithScope`, `LookupPredicateCandidates`, `Executor`, `ValidateSuperclassClosure`, `TypeScanPatternsForClass`,
-`VirtualTypeIRIsForEntityID`, `SuperclassesForClassIRI`, `SubClassClosurePairs`, `ErrSyntax`, `ErrUnsupportedFeature`,
+`ValidateBaseIRI`, `CanonicalNTriplesPredicateAndObject`, `BlankNodeID`), `reader` (`GraphReader`, `MemoryReader`,
+`NATSRPCReader`, `ClassifiedRequester`, `WithScanCounter`, `MatchAllPattern`, `ErrNilContext`, `ErrEntityNotFound`,
+`ErrScanBudgetExceeded`, `ErrPatternCapabilityUnsupported`), `sparql` AST/parser, virtual
+`rdf:type`/`rdfs:subClassOf*` resolution, complete-chain `ProjectionSpec` folding and virtual-unfolded fallback,
+`UnfoldEntity`, and `SELECT`/`ASK`/`CONSTRUCT`/`DESCRIBE` planner/executor (`Parse`, `Query`, `Executor`,
+`ResolveTypes`, `ValidateSuperclassClosure`, `ErrSyntax`, `ErrUnsupportedFeature`, `ErrUnconstrainedScan`,
 `ErrResultLimitExceeded`, `ErrScanBudgetExceeded`, `ErrQueryTimeout`, `ErrIncompleteSuperclassClosure`,
 `ErrInvalidOutputTriple`), `server` (`/sparql`, `/entities/{entity_id}.jsonld`, `/export`, `Server`, `Config`,
 `ValidateConfig`, `NegotiateAccept`, `WriteSelectAskResult`, `WriteGraphResult`, `ErrNotAcceptable`,
-`ErrUnsafeExposure`, `ErrQueryTooLarge`, `ErrExportBodyTooLarge`), `cmd/semsparql`, and the `-tags=integration`
+`ErrUnsafeExposure`), `cmd/semsparql`, and the `-tags=integration`
 live NATS/DIEKM end-to-end suite (`server/diekm_integration_test.go`, `TestIntegrationDIEKMEndToEndSuite` and
 `TestPropIntegrationDIEKMLiveServerParity`) and their unit/property/fuzz/integration proving tests run in `task verify`
 and `task cover:check`, `AGENTS.md` and `.agents/rules-index.md` are reconciled, and Task `6.1` reconciles and archives
@@ -31,8 +29,10 @@ and `task cover:check`, `AGENTS.md` and `.agents/rules-index.md` are reconciled,
 - [x] D.2 Recheck upstream tagged APIs/probes and record any missing exporter or capability-detection seam;
   file confirmed upstream gaps and attach their issue/release references to the dependent tasks.
   Verified in `internal/harness/contract/probes_test.go` (`TestProbeCanonicalNTriplesObjectSeam`,
-  `TestProbeTerminalDatatypePropagationSeam`, `TestProbeSerializerInvalidTripleOmissionSeam`,
-  `TestProbeServerPatternCapabilitySeam`); no new upstream release is required.
+  `TestProbeTerminalDatatypePropagationSeam`, `TestProbeSerializerInvalidTripleOmissionSeam`, and
+  `TestProbeServerPatternCapabilitySeam` modeling the pattern capability check proven live in
+  `TestRunEndToEndWithLiveNATSAndGraphIngest` and `TestRunRefusesIncompatibleLegacyNATSResponder`); no new upstream
+  release is required.
 
 ## 0. Bootstrap
 
@@ -88,8 +88,9 @@ and `task cover:check`, `AGENTS.md` and `.agents/rules-index.md` are reconciled,
 - [x] 4.1 Add NATSRPCReader and cmd/semsparql using declared entity/batch/prefix verbs and classified RPC.
   Prove TestScanPatternReaderParity against real NATS and graph-ingest, across opaque cursor pages and wildcard
   systems; test missing batches, errors, cancellation, short pages with continuation, shutdown and no writes.
-  Prove startup refuses an incompatible server without a full-prefix filtering fallback (using the D.2
-  `TestProbeServerPatternCapabilitySeam` check).
+  Prove startup refuses an incompatible server without a full-prefix filtering fallback (`VerifyPatternCapability`,
+  modeled in D.2 `TestProbeServerPatternCapabilitySeam` and proven in `TestRunRefusesIncompatibleLegacyNATSResponder`
+  and `TestRunEndToEndWithLiveNATSAndGraphIngest`).
 - [x] 4.2 Run end-to-end tests using the released SemVocab DIEKM pack and a live NATS/graph-ingest fixture,
   covering the complete issue #1 proving-test set. Record Rapid seeds/check counts, fuzz exploration vs replay,
   independent oracles and failing regression/mutation evidence. Run all implemented gates through task verify.
@@ -105,6 +106,6 @@ and `task cover:check`, `AGENTS.md` and `.agents/rules-index.md` are reconciled,
 
 ## 6. Reconciliation
 
-- [ ] 6.1 After implemented scope and optional disposition are complete, reconcile task truth and docs, verify
+- [x] 6.1 After implemented scope and optional disposition are complete, reconcile task truth and docs, verify
   the runtime, then archive this change and promote only behavior proven by code to openspec/specs.
   Do not archive merely because the draft documentation is complete; final CI/merge checks belong on the PR.

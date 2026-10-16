@@ -39,7 +39,7 @@ in place.
 `task --list` shows every command with its rationale.
 
 ```bash
-task doctor              # tool versions and Docker reachability against pins; starts no workloads
+task doctor              # tool versions against pins; starts no workloads
 task fmt                 # format Go sources (changes files)
 task fmt:check           # fail if any Go source needs formatting
 task tidy:check          # fail if go.mod or go.sum is not tidy

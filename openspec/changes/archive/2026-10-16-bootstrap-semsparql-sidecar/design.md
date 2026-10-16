@@ -59,16 +59,16 @@ datatype propagation, and loud invalid-triple validation; `server` `GET /entitie
 | `server` | GET/POST /sparql, entity JSON-LD, POST /export | SPARQL clients and external SHACL operators |
 | `cmd/semsparql` | Dependency registration, NATS/HTTP composition and lifecycle | Service operators; safe startup requirement |
 
-`irimap` (`Mapper`, `ValidateBaseIRI`, `CanonicalNTriplesObject`, `CanonicalNTriplesPredicateAndObject`, `BlankNodeID`,
-`ErrNotEntityIRI`, `ErrTripleRejectedByExporter`), `reader` (`GraphReader`, `MemoryReader`, `NATSRPCReader`,
-`ClassifiedRequester`, `WithScanCounter`, `MatchAllPattern`, `ErrNilContext`, `ErrEntityNotFound`,
-`ErrScanBudgetExceeded`, `ErrPatternCapabilityUnsupported`), `sparql` (`Parse`, `Query`, `Executor`, `UnfoldEntity`,
-`ResolveTypes`, `ValidateSuperclassClosure`, `ErrSyntax`, `ErrUnsupportedFeature`, `ErrUnconstrainedScan`,
-`ErrResultLimitExceeded`, `ErrScanBudgetExceeded`, `ErrQueryTimeout`, `ErrIncompleteSuperclassClosure`,
-`ErrInvalidOutputTriple`), `server` (`/sparql`, `/entities/{entity_id}.jsonld`, `/export`, `Server`, `Config`,
-`ValidateConfig`, `NegotiateAccept`, `WriteSelectAskResult`, `WriteGraphResult`, `ErrNotAcceptable`,
-`ErrUnsafeExposure`), and `cmd/semsparql` are implemented across tasks 1.1–4.2. Internal planning, folding, and type
-closure helpers remain unexported inside `sparql` so no uncalled public API is exposed.
+`irimap` (`Mapper`, `ValidateBaseIRI`, `CanonicalNTriplesPredicateAndObject`, `BlankNodeID`, `ErrNotEntityIRI`,
+`ErrTripleRejectedByExporter`), `reader` (`GraphReader`, `MemoryReader`, `NATSRPCReader`, `ClassifiedRequester`,
+`WithScanCounter`, `MatchAllPattern`, `ErrNilContext`, `ErrEntityNotFound`, `ErrScanBudgetExceeded`,
+`ErrPatternCapabilityUnsupported`), `sparql` (`Parse`, `Query`, `Executor`, `UnfoldEntity`, `ResolveTypes`,
+`ValidateSuperclassClosure`, `ErrSyntax`, `ErrUnsupportedFeature`, `ErrUnconstrainedScan`, `ErrResultLimitExceeded`,
+`ErrScanBudgetExceeded`, `ErrQueryTimeout`, `ErrIncompleteSuperclassClosure`, `ErrInvalidOutputTriple`), `server`
+(`/sparql`, `/entities/{entity_id}.jsonld`, `/export`, `Server`, `Config`, `ValidateConfig`, `NegotiateAccept`,
+`WriteSelectAskResult`, `WriteGraphResult`, `ErrNotAcceptable`, `ErrUnsafeExposure`), and `cmd/semsparql` are
+implemented across tasks 1.1–4.2. Internal planning, folding, and type closure helpers remain unexported inside `sparql`
+so no uncalled public API is exposed.
 
 ## Read-only query execution
 
@@ -76,9 +76,13 @@ All graph reads pass through GraphReader. Remote reads use only verbs from `grap
 existing exact reader and classified RPC helpers. There are no bucket writes or mutation publishes.
 Entity IDs, literal prefixes and six-position patterns use their distinct upstream validators at entry.
 An intentional empty match-all prefix is a separate bounded operation, not a value passed as a valid literal prefix.
-`EntitiesByPredicate` cannot invent a graph-index subject: until a verb is declared it uses a bounded reader scan.
+`EntitiesByPredicate` cannot invent a graph-index subject: until an upstream predicate-index verb is declared, it scans
+`MatchAllPattern` (or all in-memory entities on `MemoryReader`), filters locally for entities carrying the predicate,
+and reports total entities examined through `reader.WithScanCounter`.
 
-Plan constrained access first: exact entity → type pattern → predicate selection → bounded scan.
+Plan constrained access first: exact entity → type pattern → predicate selection → bounded scan, pushing outer bindings
+into nested `{ ... }` groups and `UNION` branches as access-path semi-join restrictions while keeping lexical `FILTER`
+scoping strictly limited to variables bound inside the inner group.
 Use opaque cursors until the server reports exhaustion; a short page is not exhaustion. Track missing batch
 entities explicitly rather than treating a successful RPC as a complete hydration, and adaptively split oversized NATS
 batch requests on `response_too_large`. Propagate classified failures.
@@ -103,7 +107,8 @@ Parse IDs with upstream named fields in `org.platform.system.domain.type.instanc
 Type metadata supplies ClassIRI and registered superclass membership. Plain `a` queries include registered
 superclasses as issue #1's RDFS entailment policy. Bound type scans (`?s a <C>` or `?s rdf:type/rdfs:subClassOf* <C>`
 for a registered class `<C>`) use `org.platform.*.domain.type.*` patterns (plus any registered projection node-class
-predicates), wildcarding unconstrained org/platform so non-matching entities never cross NATS (owner ruling B1,
+predicates via `EntitiesByPredicate`), wildcarding unconstrained org/platform so non-matching entities never cross NATS
+for domain entity classes (owner ruling B1,
 [`#issuecomment-6224587243`](https://github.com/C360Studio/semsparql/issues/1#issuecomment-6224587243)). Use
 server-side Pattern support, with no full-prefix filtering fallback.
 Startup checks ancestor closure when a superclass is itself registered; packs must register all known ancestors.
@@ -130,8 +135,8 @@ Per owner ruling D.1e, `stepIdx` is encoded as a 0-based decimal ASCII string (`
 `TestProbeCanonicalNTriplesObjectSeam` confirms that calling `export.SerializeToString` in `export.NTriples` format
 with `export.WithBaseIRI(baseIRI)` on a single source triple `{Subject: "_:s", Predicate: pred, Object: obj,
 Datatype: dt}` yields `_:s <predIRI> <canonicalObject> .\n` (where `predIRI` contains no `>`), providing an
-exporter-owned canonical object token without copying RDF classification or escaping logic. Different values of one
-predicate do not collide.
+exporter-owned canonical object token (`irimap.CanonicalNTriplesPredicateAndObject`) without copying RDF classification
+or escaping logic. Different values of one predicate do not collide.
 
 CONSTRUCT, DESCRIBE and export selection unfold applicable projections and virtual types, then use
 `export.Serialize` for Turtle, N-Triples or JSON-LD. No RDF graph writer is added here.
@@ -167,10 +172,11 @@ SHACL runs in an external tool; documentation demonstrates producing a sh:Valida
 Defaults are 10s per query, 10,000 results and 100,000 entities read. Per owner ruling D.1b, the default maximum
 SPARQL query length (GET `query` parameter or POST body) is `64 KiB` (65,536 bytes) and the default maximum
 `POST /export` JSON selector body is `256 KiB` (262,144 bytes); requests exceeding these caps are rejected with
-`413 Content Too Large`. `max_results` (default 10,000) counts solution bindings for `SELECT` (bounding both output
-rows and the internal pre-`ORDER BY` / pre-`DISTINCT` candidate buffer), 1 boolean result for `ASK`, and deduplicated
-output RDF triples (including virtual `rdf:type` and unfolded blank-node triples) for `CONSTRUCT`, `DESCRIBE`, and
-`POST /export`. A query LIMIT is not permission to breach resource limits.
+`413 Content Too Large`. `max_results` (default 10,000) counts solution bindings for `SELECT`, 1 boolean result for
+`ASK`, and deduplicated output RDF triples (including virtual `rdf:type` and unfolded blank-node triples) for
+`CONSTRUCT`, `DESCRIBE`, and `POST /export`, while intermediate solution buffers across `ASK`, `SELECT DISTINCT`,
+`CONSTRUCT`, `DESCRIBE`, and `UNION` are bounded by an intermediate ceiling (`max(max_results*10, 100)`) that fails
+closed with `result_limit_exceeded`. A query LIMIT is not permission to breach resource limits.
 Per owner ruling D.1a, by default a breached `max_results` or `max_scan_entities` budget returns
 `422 Unprocessable Entity` and a breached query timeout returns `504 Gateway Timeout`, with an error body naming the
 breached budget (`result_limit_exceeded`, `scan_budget_exceeded`, `query_timeout`) and no partial success. Only
@@ -181,11 +187,13 @@ evaluated successes. Test all defaults and boundaries.
 
 Bind localhost by default. Refuse non-local binds without configured bearer-token or mTLS protection.
 Validate configuration, pack ancestor closure and remote pattern capability before readiness. D.2 probe
-`TestProbeServerPatternCapabilitySeam` verifies that sending `PrefixQueryRequest{Pattern: "invalid", Limit: 1}` over
-`graph.ingest.query.prefix` returns classified `errs.ErrorInvalid` (`semtypes.ErrorCodeEntityIDPatternInvalid`) with
-zero bucket I/O on a pattern-capable server, whereas a legacy pre-#259 server ignores the unknown `"pattern"` field
-and returns `err == nil`. Pairing that negative probe with `PrefixQueryRequest{Pattern: "*.*.*.*.*.*", Limit: 1}`
-establishes server `Pattern` capability at startup without a full-prefix filtering fallback.
+`TestProbeServerPatternCapabilitySeam` models how sending `PrefixQueryRequest{Pattern: "invalid", Limit: 1}` over
+`graph.ingest.query.prefix` returns classified `errs.ErrorInvalid` (`semtypes.ErrorCodeEntityIDPatternInvalid`) on a
+pattern-capable server whereas a legacy pre-#259 server ignores the unknown `"pattern"` field and returns `err == nil`;
+the live capable path is proven against real `graph-ingest` in `TestRunEndToEndWithLiveNATSAndGraphIngest` and the
+startup refusal path is proven in `TestRunRefusesIncompatibleLegacyNATSResponder`. Pairing that negative probe with
+`PrefixQueryRequest{Pattern: "*.*.*.*.*.*", Limit: 1}` establishes server `Pattern` capability at startup without a
+full-prefix filtering fallback.
 Contexts enter operations as arguments; root context belongs to main. Cancellation must stop work, with bounded
 shutdown and no detached query workers. Lifecycle tests assert observable completion, not a chosen lock design.
 

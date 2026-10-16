@@ -37,10 +37,12 @@ and `4.1` and resolving the `D.2` portion of Task `3.3`.
      `""` for every omitted triple, enabling a loud pre-serialization failure before emitting HTTP 200 responses.
 
 4. **Server Pattern-Capability Detection (`TestProbeServerPatternCapabilitySeam`, unblocks Task `4.1`)**
-   - On `semengine >= v0.1.0-alpha.2` (`processor/graph-ingest/query.go:250–266`), sending
-     `PrefixQueryRequest{Pattern: "invalid", Limit: 1}` to `graph.ingest.query.prefix` returns a classified
-     `errs.ErrorInvalid` with code `semtypes.ErrorCodeEntityIDPatternInvalid` (`"entity_id_pattern_invalid"`) before
-     any KV bucket I/O.
+   - `TestProbeServerPatternCapabilitySeam` models both responder contracts in-process (later proven against live
+     `graph-ingest` in `TestRunEndToEndWithLiveNATSAndGraphIngest` and against a legacy responder in
+     `TestRunRefusesIncompatibleLegacyNATSResponder`): on `semengine >= v0.1.0-alpha.2`
+     (`processor/graph-ingest/query.go:250–266`), sending `PrefixQueryRequest{Pattern: "invalid", Limit: 1}` to
+     `graph.ingest.query.prefix` returns a classified `errs.ErrorInvalid` with code
+     `semtypes.ErrorCodeEntityIDPatternInvalid` (`"entity_id_pattern_invalid"`).
    - A pre-`semengine#259` server whose request struct lacks `Pattern` ignores the unknown `"pattern"` JSON field and
      treats the request as `{Prefix: "", Limit: 1}`, returning `err == nil`.
    - Pairing the negative probe (`{Pattern: "invalid", Limit: 1}` -> `ErrorCodeEntityIDPatternInvalid`) with a valid

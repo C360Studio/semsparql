@@ -1,6 +1,10 @@
-# BGP planner
+# bgp-planner Specification
 
-## ADDED Requirements
+## Purpose
+Defines read-only `GraphReader` storage access, `StandardIRI` predicate resolution, virtual `rdf:type` and
+`rdfs:subClassOf*` ancestry evaluation, SPARQL solution semantics, and bounded query evaluation for SemSparql.
+
+## Requirements
 
 ### Requirement: Read-only graph access
 
@@ -49,16 +53,19 @@ an IRI has no matches.
 
 Type evaluation SHALL combine explicit stored `rdf:type` triples on candidate entities and virtual types derived from
 entity IDs as graph sets, keep bound registered-class `?s a <C>` and `?s rdf:type/rdfs:subClassOf* <C>` scans selective
-(`org.platform.*.domain.type.*` plus registered projection node-class predicates) without falling back to a full-graph
-scan, support registered superclass entailment, and require complete registered ancestor closure at startup.
+(`org.platform.*.domain.type.*` plus registered projection node-class predicates via `EntitiesByPredicate`) without
+falling back to an unconstrained full-graph scan for domain entity classes, push outer bindings into nested groups and
+`UNION` branches as access-path restrictions while preserving lexical `FILTER` scope, support registered superclass
+entailment, and require complete registered ancestor closure at startup.
 
 #### Scenario: Bound class scan
 
-- **WHEN** a query constrains `?s rdf:type <C>` or `?s rdf:type/rdfs:subClassOf* <C>` for a registered class or
-  projection node class `<C>`
-- **THEN** the planner and executor read only matching `org.platform.*.domain.type.*` patterns and projection predicates
-  (charging the scan budget) so non-matching entities never cross NATS, and merge virtual and explicit `rdf:type`
-  triples on matched candidate entities.
+- **WHEN** a query constrains `?s rdf:type <C>` or `?s rdf:type/rdfs:subClassOf* <C>` for a registered class `<C>`
+- **THEN** the planner and executor read only matching `org.platform.*.domain.type.*` patterns (and, when `<C>` also
+  matches a registered `ProjectionSpec` `NodeClassIRI`, the corresponding projection predicates via
+  `EntitiesByPredicate`, which scans `MatchAllPattern` and filters locally until SemEngine exposes a server-side
+  predicate index, charging all examined entities to the scan budget) so non-matching entities never cross NATS for
+  domain entity classes, and merge virtual and explicit `rdf:type` triples on matched candidate entities.
 
 #### Scenario: Unbound class
 

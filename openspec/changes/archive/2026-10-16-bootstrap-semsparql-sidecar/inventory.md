@@ -167,12 +167,15 @@ Clients should not have to predict result size or scan cost to avoid incomplete 
    Object: obj, Datatype: dt}` emits `_:s <predIRI> <canonicalNTriplesObject> .\n` (where `predIRI` contains no `>`),
    yielding the exact exporter-owned canonical N-Triples object token for `BlankNodeID` without copying RDF formatter
    logic.
-3. Resolved in D.2 (`TestProbeServerPatternCapabilitySeam` in `internal/harness/contract/probes_test.go`): sending
-   `PrefixQueryRequest{Pattern: "invalid", Limit: 1}` to `graph.ingest.query.prefix` returns classified
-   `errs.ErrorInvalid` (`semtypes.ErrorCodeEntityIDPatternInvalid`) with zero bucket I/O on a pattern-capable server
-   (`processor/graph-ingest/query.go:262–265`), whereas a pre-#259 server without `PrefixQueryRequest.Pattern` ignores
-   the unknown JSON field and treats it as an empty-prefix query (`err == nil`). Combining that negative probe with
-   `PrefixQueryRequest{Pattern: "*.*.*.*.*.*", Limit: 1}` establishes server `Pattern` capability at startup.
+3. Resolved in D.2 (`TestProbeServerPatternCapabilitySeam` in `internal/harness/contract/probes_test.go`, which models
+   both responder contracts in-process, with the live `graph-ingest` capable path proven in
+   `TestRunEndToEndWithLiveNATSAndGraphIngest` and the legacy refusal path proven in
+   `TestRunRefusesIncompatibleLegacyNATSResponder`): sending `PrefixQueryRequest{Pattern: "invalid", Limit: 1}` to
+   `graph.ingest.query.prefix` returns classified `errs.ErrorInvalid` (`semtypes.ErrorCodeEntityIDPatternInvalid`) on a
+   pattern-capable server (`processor/graph-ingest/query.go:262–265`), whereas a pre-#259 server without
+   `PrefixQueryRequest.Pattern` ignores the unknown JSON field and treats it as an empty-prefix query (`err == nil`).
+   Combining that negative probe with `PrefixQueryRequest{Pattern: "*.*.*.*.*.*", Limit: 1}` establishes server
+   `Pattern` capability at startup.
 4. Resolved at `semvocab@v0.1.0` (`64d3b8bc789c3e178a4cfb92465db4a02b1bd3f6`): `packs.BFOCCOCoreSpec` /
    `packs.RegisterBFOCCOCore` and `diekm.Spec` / `diekm.Register` / `diekm.Shapes` are pinned in `go.mod` and
    verified by `TestPinnedUpstreamSeamsSmoke` in `internal/harness/contract/deps_test.go`.
