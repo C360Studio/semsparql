@@ -25,9 +25,10 @@ replacement, pseudo-version, fork or copy of either dependency is permitted (`Te
 PR #3 changes CI setup-node; PR #4 changes OpenSpec tooling. Neither overlaps these paths or capabilities.
 There is no required merge order with this change; if #4 lands first, revalidate with its new tooling pin.
 Implementation proceeds 0 → 1 → 2 (MVP) → 3 → 4. Task 0.1 (`go.mod`, Go gates, and `internal/harness/contract`
-structural guards), task 0.2, task 1.1 (`irimap`), task 1.2 (`reader.GraphReader` and `reader.MemoryReader`), and task
-2.1 (`sparql` AST and parser) are complete; each remaining issue task is a reviewable implementation PR. Phase 5 is
-optional and separately decided, never an implicit prerequisite for the initial sidecar.
+structural guards), task 0.2, task 1.1 (`irimap`), task 1.2 (`reader.GraphReader` and `reader.MemoryReader`), task 2.1
+(`sparql` AST and parser), and task 2.2 (`sparql` plain-BGP `SELECT`/`ASK` planner and executor) are complete; each
+remaining issue task is a reviewable implementation PR. Phase 5 is optional and separately decided, never an implicit
+prerequisite for the initial sidecar.
 
 ## Options considered
 
@@ -54,9 +55,11 @@ optional and separately decided, never an implicit prerequisite for the initial 
 | `cmd/semsparql` | Dependency registration, NATS/HTTP composition and lifecycle | Service operators; safe startup requirement |
 
 `irimap` (`Mapper`, `CanonicalNTriplesObject`, `BlankNodeID`), `reader` (`GraphReader`, `MemoryReader`,
-`MatchAllPattern`, `ErrNilContext`, `ErrEntityNotFound`, `ErrScanBudgetExceeded`), and the `sparql` AST and parser
-(`Parse`, `Query`, `ErrSyntax`, `ErrUnsupportedFeature`) are implemented in tasks 1.1–2.1; the remaining rows are
-proposed surfaces from issue #1. There is no additional public API for hypothetical users.
+`MatchAllPattern`, `ErrNilContext`, `ErrEntityNotFound`, `ErrScanBudgetExceeded`), and `sparql` AST/parser and
+plain-BGP `SELECT`/`ASK` planner/executor (`Parse`, `Query`, `PlanBGP`, `Executor`, `ErrSyntax`,
+`ErrUnsupportedFeature`, `ErrResultLimitExceeded`, `ErrScanBudgetExceeded`, `ErrQueryTimeout`) are implemented in tasks
+1.1–2.2; the remaining rows are proposed surfaces from issue #1. There is no additional public API for hypothetical
+users.
 
 ## Read-only query execution
 

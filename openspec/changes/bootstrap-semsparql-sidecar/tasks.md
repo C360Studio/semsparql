@@ -1,14 +1,16 @@
 # Bootstrap tasks
 
 These are the implementation tasks from issue #1. Each numbered issue task is one reviewable PR. Dependencies run
-0 → 1 → 2 → 3 → 4, with the MVP at 2.3. The source issue remains open. Tasks 0.1, 0.2, D.1, D.2, 1.1, 1.2, 2.1, and
-5.1 (disposition) are complete: `go.mod` pins `semengine v0.1.0-alpha.2` and `semvocab v0.1.0`, the Go verification
+0 → 1 → 2 → 3 → 4, with the MVP at 2.3. The source issue remains open. Tasks 0.1, 0.2, D.1, D.2, 1.1, 1.2, 2.1, 2.2,
+and 5.1 (disposition) are complete: `go.mod` pins `semengine v0.1.0-alpha.2` and `semvocab v0.1.0`, the Go verification
 gates and `internal/harness/contract` structural guards and D.2 upstream probes run in `task verify`, owner
 consumer-contract rulings D.1a–D.1e are recorded in `design.md` and `specs/**`, `irimap` (`Mapper`,
 `CanonicalNTriplesObject`, `BlankNodeID`), `reader` (`GraphReader`, `MemoryReader`, `MatchAllPattern`, `ErrNilContext`,
-`ErrEntityNotFound`, `ErrScanBudgetExceeded`), and `sparql` AST/parser (`Parse`, `Query`, `ErrSyntax`,
-`ErrUnsupportedFeature`) and their unit/property/fuzz proving tests run in `task verify` and `task cover:check`, and
-`AGENTS.md` and `.agents/rules-index.md` are reconciled. Remaining runtime tasks `2.2`–`4.2` proceed in phase order.
+`ErrEntityNotFound`, `ErrScanBudgetExceeded`), and `sparql` AST/parser and plain-BGP `SELECT`/`ASK` planner/executor
+(`Parse`, `Query`, `PlanBGP`, `Executor`, `ErrSyntax`, `ErrUnsupportedFeature`, `ErrResultLimitExceeded`,
+`ErrScanBudgetExceeded`, `ErrQueryTimeout`) and their unit/property/fuzz proving tests run in `task verify` and
+`task cover:check`, and `AGENTS.md` and `.agents/rules-index.md` are reconciled. Remaining runtime tasks `2.3`–`4.2`
+proceed in phase order.
 
 ## Design readiness
 
@@ -43,7 +45,7 @@ consumer-contract rulings D.1a–D.1e are recorded in `design.md` and `specs/**`
 
 - [x] 2.1 Implement AST/parser for the supported subset, with FuzzParseSPARQL accepted/rejected seeds and
   TestUnsupportedFeatureErrors. Include all listed FILTER functions; reject REDUCED and unsupported paths/features.
-- [ ] 2.2 Implement plain-BGP SELECT/ASK planning and execution using MemoryReader, including OPTIONAL, UNION,
+- [x] 2.2 Implement plain-BGP SELECT/ASK planning and execution using MemoryReader, including OPTIONAL, UNION,
   FILTER, DISTINCT, ORDER BY, LIMIT/OFFSET. Prove TestLookupByIRIMultiMatchUnion and TestQueryLimits; explicitly
   test duplicate UNION solutions survive, DISTINCT removes duplicates, and unknown ordinary predicate IRIs yield
   no matches after virtual type/projection handling.
