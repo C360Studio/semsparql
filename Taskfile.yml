@@ -12,7 +12,7 @@ tasks:
       - task --list
 
   doctor:
-    desc: Report tool versions and Docker reachability against their pins; starts no workloads
+    desc: Report tool versions against their pins; starts no workloads
     cmds:
       - scripts/doctor.sh
 

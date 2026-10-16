@@ -299,20 +299,20 @@ func TestBlankNodeIDMultiValued(t *testing.T) {
 		Object:    "Strike",
 	}
 
-	canonISR, err := CanonicalNTriplesObject(trISR, baseIRI)
+	_, canonISR, err := CanonicalNTriplesPredicateAndObject(trISR, baseIRI)
 	if err != nil {
-		t.Fatalf("CanonicalNTriplesObject(ISR) failed: %v", err)
+		t.Fatalf("CanonicalNTriplesPredicateAndObject(ISR) failed: %v", err)
 	}
 	if canonISR != `"ISR"` {
-		t.Fatalf("CanonicalNTriplesObject(ISR) = %q, want %q", canonISR, `"ISR"`)
+		t.Fatalf("CanonicalNTriplesPredicateAndObject(ISR) = %q, want %q", canonISR, `"ISR"`)
 	}
 
-	canonStrike, err := CanonicalNTriplesObject(trStrike, baseIRI)
+	_, canonStrike, err := CanonicalNTriplesPredicateAndObject(trStrike, baseIRI)
 	if err != nil {
-		t.Fatalf("CanonicalNTriplesObject(Strike) failed: %v", err)
+		t.Fatalf("CanonicalNTriplesPredicateAndObject(Strike) failed: %v", err)
 	}
 	if canonStrike != `"Strike"` {
-		t.Fatalf("CanonicalNTriplesObject(Strike) = %q, want %q", canonStrike, `"Strike"`)
+		t.Fatalf("CanonicalNTriplesPredicateAndObject(Strike) = %q, want %q", canonStrike, `"Strike"`)
 	}
 
 	for _, stepIdx := range []int{0, 1, 2, 10} {
@@ -355,7 +355,7 @@ func TestBlankNodeIDMultiValued(t *testing.T) {
 		t.Fatalf("step 0 and step 1 collided: %q", bStep0)
 	}
 
-	// Verify CanonicalNTriplesObject agrees byte-for-byte with exporter output across
+	// Verify CanonicalNTriplesPredicateAndObject agrees byte-for-byte with exporter output across
 	// typed literals, numeric values, and entity-ID references.
 	const targetEntityID = "c360.ops.sem.intel.unit.sqn1"
 	termCases := []struct {
@@ -395,12 +395,12 @@ func TestBlankNodeIDMultiValued(t *testing.T) {
 
 	for _, tc := range termCases {
 		t.Run("canonical_term/"+tc.name, func(t *testing.T) {
-			gotObj, err := CanonicalNTriplesObject(tc.tr, baseIRI)
+			_, gotObj, err := CanonicalNTriplesPredicateAndObject(tc.tr, baseIRI)
 			if err != nil {
-				t.Fatalf("CanonicalNTriplesObject failed: %v", err)
+				t.Fatalf("CanonicalNTriplesPredicateAndObject failed: %v", err)
 			}
 			if gotObj != tc.wantSuffix {
-				t.Fatalf("CanonicalNTriplesObject = %q, want %q", gotObj, tc.wantSuffix)
+				t.Fatalf("CanonicalNTriplesPredicateAndObject = %q, want %q", gotObj, tc.wantSuffix)
 			}
 			fullNT, err := export.SerializeToString([]message.Triple{tc.tr}, export.NTriples, export.WithBaseIRI(baseIRI))
 			if err != nil {
@@ -412,7 +412,7 @@ func TestBlankNodeIDMultiValued(t *testing.T) {
 		})
 	}
 
-	// Verify input validation errors on BlankNodeID and CanonicalNTriplesObject.
+	// Verify input validation errors on BlankNodeID and CanonicalNTriplesPredicateAndObject.
 	invalidBlankNodeCases := []struct {
 		name     string
 		entID    string
@@ -435,17 +435,17 @@ func TestBlankNodeIDMultiValued(t *testing.T) {
 		})
 	}
 
-	if got, err := CanonicalNTriplesObject(message.Triple{Subject: entityID, Object: "v"}, baseIRI); err == nil {
-		t.Fatalf("CanonicalNTriplesObject with empty predicate = %q, nil; want error", got)
+	if _, got, err := CanonicalNTriplesPredicateAndObject(message.Triple{Subject: entityID, Object: "v"}, baseIRI); err == nil {
+		t.Fatalf("CanonicalNTriplesPredicateAndObject with empty predicate = %q, nil; want error", got)
 	}
-	if got, err := CanonicalNTriplesObject(message.Triple{Subject: entityID, Predicate: predicate, Object: nil}, baseIRI); err == nil {
-		t.Fatalf("CanonicalNTriplesObject with nil object = %q, nil; want error", got)
+	if _, got, err := CanonicalNTriplesPredicateAndObject(message.Triple{Subject: entityID, Predicate: predicate, Object: nil}, baseIRI); err == nil {
+		t.Fatalf("CanonicalNTriplesPredicateAndObject with nil object = %q, nil; want error", got)
 	}
-	if got, err := CanonicalNTriplesObject(message.Triple{Subject: entityID, Predicate: "bad>pred", Object: "v"}, baseIRI); err == nil {
-		t.Fatalf("CanonicalNTriplesObject with invalid predicate = %q, nil; want error", got)
+	if _, got, err := CanonicalNTriplesPredicateAndObject(message.Triple{Subject: entityID, Predicate: "bad>pred", Object: "v"}, baseIRI); err == nil {
+		t.Fatalf("CanonicalNTriplesPredicateAndObject with invalid predicate = %q, nil; want error", got)
 	}
-	if got, err := CanonicalNTriplesObject(message.Triple{Subject: entityID, Predicate: predicate, Object: "v"}, "https://bad>base.example"); err == nil {
-		t.Fatalf("CanonicalNTriplesObject with invalid baseIRI = %q, nil; want error", got)
+	if _, got, err := CanonicalNTriplesPredicateAndObject(message.Triple{Subject: entityID, Predicate: predicate, Object: "v"}, "https://bad>base.example"); err == nil {
+		t.Fatalf("CanonicalNTriplesPredicateAndObject with invalid baseIRI = %q, nil; want error", got)
 	}
 
 	// Verify ValidateBaseIRI accepts valid http(s) bases and rejects relative or unsafe bases.

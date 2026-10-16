@@ -105,6 +105,6 @@ and `task cover:check`, `AGENTS.md` and `.agents/rules-index.md` are reconciled,
 
 ## 6. Reconciliation
 
-- [x] 6.1 After implemented scope and optional disposition are complete, reconcile task truth and docs, verify
+- [ ] 6.1 After implemented scope and optional disposition are complete, reconcile task truth and docs, verify
   the runtime, then archive this change and promote only behavior proven by code to openspec/specs.
   Do not archive merely because the draft documentation is complete; final CI/merge checks belong on the PR.

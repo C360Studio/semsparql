@@ -821,7 +821,7 @@ func TestBGPFoldingCollapsesDIEKMChains(t *testing.T) {
 		if len(planJoined.Steps) != 2 || planJoined.Steps[0].Kind != accessTypePattern || planJoined.Steps[1].Folded == nil {
 			t.Fatalf("planBGPWithScope joined = %+v, want accessTypePattern followed by FoldedChain", planJoined.Steps)
 		}
-		gotJoined, err := exec.Execute(context.Background(), qJoined, withOrgPlatform("c360", "ops"))
+		gotJoined, err := exec.Execute(context.Background(), qJoined)
 		if err != nil {
 			t.Fatalf("Execute joined type + chain: %v", err)
 		}

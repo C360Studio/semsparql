@@ -97,8 +97,6 @@ type Config struct {
 	MaxResults      int
 	MaxScanEntities int
 	AllowTruncation bool
-	org             string
-	platform        string
 }
 
 // EvalOption configures a single Execute / ExecuteQuery invocation.
@@ -106,8 +104,6 @@ type EvalOption func(*evalOptions)
 
 type evalOptions struct {
 	allowTruncation *bool
-	org             *string
-	platform        *string
 }
 
 // WithAllowTruncation overrides Config.AllowTruncation for a single query execution
@@ -115,15 +111,6 @@ type evalOptions struct {
 func WithAllowTruncation(allow bool) EvalOption {
 	return func(o *evalOptions) {
 		o.allowTruncation = &allow
-	}
-}
-
-// withOrgPlatform overrides Config.org and Config.platform for a single query
-// execution when scoping bound-class pattern scans.
-func withOrgPlatform(org, platform string) EvalOption {
-	return func(o *evalOptions) {
-		o.org = &org
-		o.platform = &platform
 	}
 }
 
@@ -187,14 +174,6 @@ func (e *Executor) Execute(ctx context.Context, q *Query, opts ...EvalOption) (*
 	if eo.allowTruncation != nil {
 		allowTruncation = *eo.allowTruncation
 	}
-	org := e.cfg.org
-	if eo.org != nil {
-		org = *eo.org
-	}
-	platform := e.cfg.platform
-	if eo.platform != nil {
-		platform = *eo.platform
-	}
 
 	timeout := e.cfg.Timeout
 	if timeout <= 0 {
@@ -219,8 +198,6 @@ func (e *Executor) Execute(ctx context.Context, q *Query, opts ...EvalOption) (*
 		enforceSolutionLimit: true,
 		budgetRemaining:      maxScan,
 		allowTruncation:      allowTruncation,
-		org:                  org,
-		platform:             platform,
 		unfoldedBySubj:       make(map[Term][]rdfTriple),
 	}
 
@@ -242,6 +219,8 @@ func (e *Executor) Execute(ctx context.Context, q *Query, opts ...EvalOption) (*
 	}
 }
 
+type outerBounds map[string][]Term
+
 type execState struct {
 	reader               reader.GraphReader
 	mapper               *irimap.Mapper
@@ -253,9 +232,17 @@ type execState struct {
 	allowTruncation      bool
 	truncated            bool
 	truncationReason     string
-	org                  string
-	platform             string
+	outerBounds          outerBounds
 	unfoldedBySubj       map[Term][]rdfTriple
+}
+
+const (
+	intermediateSolutionMultiplier = 10
+	minIntermediateSolutionCap     = 100
+)
+
+func (s *execState) maxIntermediateSolutions() int {
+	return max(s.maxResults*intermediateSolutionMultiplier, minIntermediateSolutionCap)
 }
 
 func (s *execState) markTruncated(reason string) {
@@ -322,6 +309,9 @@ func (s *execState) appendSolution(dst *[]Solution, sol Solution) (bool, error) 
 			s.markTruncated(TruncationReasonResultLimit)
 			return true, nil
 		}
+		return false, newResultLimitError(s.maxResults)
+	}
+	if !s.enforceSolutionLimit && len(*dst) >= s.maxIntermediateSolutions() {
 		return false, newResultLimitError(s.maxResults)
 	}
 	*dst = append(*dst, sol)
@@ -539,9 +529,13 @@ func (s *execState) evalGroup(ctx context.Context, g GroupPattern, current []Sol
 		case SubGroupPattern:
 			// SPARQL 1.1 §5.2.2 / §18.2.2.6: evaluate nested group bottom-up in its
 			// own lexical scope so inner FILTERs only see variables bound inside the
-			// nested group, then join with outer solutions.
+			// nested group, while pushing outer bindings down as an access-path
+			// restriction (semi-join) on variables referenced in inner BGPs.
+			savedBounds := s.outerBounds
+			s.outerBounds = extractOuterBounds(solutions, s.outerBounds)
 			var inner []Solution
 			inner, err = s.evalGroup(ctx, p.Group, []Solution{{}}, elDisallowed)
+			s.outerBounds = savedBounds
 			if err == nil {
 				solutions, err = s.joinSolutions(ctx, solutions, inner)
 			}
@@ -688,7 +682,10 @@ func (s *execState) evalOptional(ctx context.Context, opt OptionalPattern, curre
 		if err := s.checkContext(ctx); err != nil {
 			return nil, err
 		}
+		savedBounds := s.outerBounds
+		s.outerBounds = nil
 		ext, err := s.evalGroup(ctx, opt.Group, []Solution{sol.Clone()}, outerDisallowed)
+		s.outerBounds = savedBounds
 		if err != nil {
 			return nil, err
 		}
@@ -725,24 +722,121 @@ func (s *execState) evalUnion(ctx context.Context, u UnionPattern, current []Sol
 		return nil, nil
 	}
 	// SPARQL 1.1 §18.2.2.6: evaluate each UNION branch bottom-up in its own
-	// lexical scope, union the branch solution sequences, and join with current.
+	// lexical scope, while pushing outer bindings down as an access-path
+	// restriction (semi-join) on variables referenced in inner BGPs.
+	savedBounds := s.outerBounds
+	s.outerBounds = extractOuterBounds(current, s.outerBounds)
 	savedEnforce := s.enforceSolutionLimit
 	s.enforceSolutionLimit = false
 	unioned := make([]Solution, 0)
 	for _, branch := range u.Branches {
 		if err := s.checkContext(ctx); err != nil {
 			s.enforceSolutionLimit = savedEnforce
+			s.outerBounds = savedBounds
 			return nil, err
 		}
 		branchSols, err := s.evalGroup(ctx, branch, []Solution{{}}, outerDisallowed)
 		if err != nil {
 			s.enforceSolutionLimit = savedEnforce
+			s.outerBounds = savedBounds
 			return nil, err
 		}
-		unioned = append(unioned, branchSols...)
+		for _, bsol := range branchSols {
+			stop, err := s.appendSolution(&unioned, bsol)
+			if err != nil {
+				s.enforceSolutionLimit = savedEnforce
+				s.outerBounds = savedBounds
+				return nil, err
+			}
+			if stop {
+				break
+			}
+		}
 	}
 	s.enforceSolutionLimit = savedEnforce
+	s.outerBounds = savedBounds
 	return s.joinSolutions(ctx, current, unioned)
+}
+
+func extractOuterBounds(solutions []Solution, inherited outerBounds) outerBounds {
+	if len(solutions) == 0 && len(inherited) == 0 {
+		return nil
+	}
+	out := make(outerBounds, len(inherited))
+	for k, terms := range inherited {
+		out[k] = slices.Clone(terms)
+	}
+	boundVars := allBoundVarsInSolutions(solutions)
+	for k := range boundVars {
+		var terms []Term
+		for _, sol := range solutions {
+			t := sol[k]
+			exists := false
+			for _, prev := range terms {
+				if termsMatch(prev, t) {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				terms = append(terms, t)
+			}
+		}
+		if prevTerms, hadInherited := out[k]; hadInherited {
+			var intersected []Term
+			for _, t := range terms {
+				for _, pt := range prevTerms {
+					if termsMatch(t, pt) {
+						intersected = append(intersected, t)
+						break
+					}
+				}
+			}
+			out[k] = intersected
+		} else {
+			out[k] = terms
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func allTermsAreIRIs(terms []Term) bool {
+	if len(terms) == 0 {
+		return false
+	}
+	for _, t := range terms {
+		if t.Kind != TermIRI {
+			return false
+		}
+	}
+	return true
+}
+
+func seedSolutionsWithOuterTerms(solutions []Solution, key string, terms []Term) []Solution {
+	if len(solutions) == 0 || len(terms) == 0 {
+		return nil
+	}
+	out := make([]Solution, 0, len(solutions)*len(terms))
+	for _, sol := range solutions {
+		if existing, ok := sol[key]; ok {
+			for _, t := range terms {
+				if termsMatch(existing, t) {
+					out = append(out, sol)
+					break
+				}
+			}
+			continue
+		}
+		for _, t := range terms {
+			ext := sol.Clone()
+			ext[key] = t
+			out = append(out, ext)
+		}
+	}
+	return out
 }
 
 type rdfTriple struct {
@@ -758,7 +852,7 @@ func (s *execState) evalBGP(ctx context.Context, bgp BGPPattern, current []Solut
 
 	// Pre-check static emptiness before touching GraphReader.
 	for _, tp := range bgp.Triples {
-		step := classifySinglePatternWithScope(tp, s.mapper, s.org, s.platform)
+		step := classifySinglePatternWithScope(tp, s.mapper, "", "")
 		if step.Kind == accessEmpty {
 			return nil, nil
 		}
@@ -779,7 +873,19 @@ func (s *execState) evalBGP(ctx context.Context, bgp BGPPattern, current []Solut
 		}
 		boundSubjects := allBoundVarsInSolutions(solutions)
 		boundObjIRIs := allBoundIRIVarsInSolutions(solutions)
-		bestIdx, step := pickNextBGPCandidate(candidates, boundSubjects, boundObjIRIs, s.mapper, s.org, s.platform)
+		for k, terms := range s.outerBounds {
+			if boundSubjects == nil {
+				boundSubjects = make(map[string]bool)
+			}
+			boundSubjects[k] = true
+			if allTermsAreIRIs(terms) {
+				if boundObjIRIs == nil {
+					boundObjIRIs = make(map[string]bool)
+				}
+				boundObjIRIs[k] = true
+			}
+		}
+		bestIdx, step := pickNextBGPCandidate(candidates, boundSubjects, boundObjIRIs, s.mapper, "", "")
 		if step.Kind == accessEmpty {
 			return nil, nil
 		}
@@ -788,8 +894,24 @@ func (s *execState) evalBGP(ctx context.Context, bgp BGPPattern, current []Solut
 
 		var err error
 		if cand.isChain {
+			if key, ok := bindingKey(cand.chain.Subject); ok && !allSubjectsBound(cand.chain.Subject, solutions) {
+				if terms, hasOuter := s.outerBounds[key]; hasOuter {
+					solutions = seedSolutionsWithOuterTerms(solutions, key, terms)
+				}
+			}
 			solutions, err = s.evalFoldedChain(ctx, cand.chain, solutions)
 		} else {
+			if key, ok := bindingKey(cand.triple.Subject); ok && !allSubjectsBound(cand.triple.Subject, solutions) {
+				if terms, hasOuter := s.outerBounds[key]; hasOuter {
+					solutions = seedSolutionsWithOuterTerms(solutions, key, terms)
+				}
+			} else if (cand.triple.IsPlainRDFType() || cand.triple.IsRDFTypeWithSubClassPath()) && !allObjectsBoundToIRIs(cand.triple.Object, solutions) {
+				if key, ok := bindingKey(cand.triple.Object); ok {
+					if terms, hasOuter := s.outerBounds[key]; hasOuter && allTermsAreIRIs(terms) {
+						solutions = seedSolutionsWithOuterTerms(solutions, key, terms)
+					}
+				}
+			}
 			solutions, err = s.evalTriplePattern(ctx, cand.triple, solutions)
 		}
 		if err != nil {
@@ -1052,7 +1174,7 @@ func (s *execState) evalTriplePattern(ctx context.Context, tp TriplePattern, sol
 		return s.evalStandaloneSubClassPath(ctx, tp, solutions)
 	}
 
-	step := classifySinglePatternWithScope(tp, s.mapper, s.org, s.platform)
+	step := classifySinglePatternWithScope(tp, s.mapper, "", "")
 	if step.Kind == accessEmpty {
 		return nil, nil
 	}
@@ -1192,7 +1314,7 @@ func (s *execState) resolveBoundObjectTypePatterns(obj Term, step planStep, solu
 			continue
 		}
 		preds = append(preds, ProjectionPredicatesForNodeClass(resolved.Value)...)
-		pats, err := TypeScanPatternsForClass(resolved.Value, s.org, s.platform)
+		pats, err := TypeScanPatternsForClass(resolved.Value, "", "")
 		if err != nil {
 			return step, false
 		}

@@ -132,16 +132,25 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		return err
 	}
 
+	runCtx, cancelRun := context.WithCancelCause(ctx)
+	defer cancelRun(nil)
+
 	nc, err := natsclient.NewClient(
 		*natsURL,
 		natsclient.WithName("semsparql"),
 		natsclient.WithTimeout(*natsTimeout),
 		natsclient.WithHealthInterval(0),
+		natsclient.WithConnectionLostCallback(func(connErr error) {
+			if connErr == nil {
+				connErr = errors.New("NATS connection permanently lost")
+			}
+			cancelRun(fmt.Errorf("nats connection lost: %w", connErr))
+		}),
 	)
 	if err != nil {
 		return fmt.Errorf("create NATS client: %w", err)
 	}
-	if err := nc.Connect(ctx); err != nil {
+	if err := nc.Connect(runCtx); err != nil {
 		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		return errors.Join(fmt.Errorf("connect NATS client: %w", err), nc.Close(closeCtx))
@@ -151,7 +160,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		defer cancel()
 		_ = nc.Close(closeCtx)
 	}()
-	if err := nc.WaitForConnection(ctx); err != nil {
+	if err := nc.WaitForConnection(runCtx); err != nil {
 		return fmt.Errorf("wait for NATS connection: %w", err)
 	}
 
@@ -159,7 +168,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	if err != nil {
 		return err
 	}
-	if err := natsReader.VerifyPatternCapability(ctx); err != nil {
+	if err := natsReader.VerifyPatternCapability(runCtx); err != nil {
 		return err
 	}
 
@@ -168,13 +177,17 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		return err
 	}
 
-	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", srvCfg.BindAddress)
+	ln, err := (&net.ListenConfig{}).Listen(runCtx, "tcp", srvCfg.BindAddress)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", srvCfg.BindAddress, err)
 	}
 	_, _ = fmt.Fprintf(stderr, "semsparql listening on %s\n", ln.Addr().String())
 
-	return srv.Serve(ctx, ln)
+	serveErr := srv.Serve(runCtx, ln)
+	if cause := context.Cause(runCtx); cause != nil && ctx.Err() == nil {
+		return errors.Join(cause, serveErr)
+	}
+	return serveErr
 }
 
 func registerDefaultVocabularyPacks() error {

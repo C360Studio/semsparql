@@ -140,7 +140,14 @@ func TestVirtualRDFTypeAndSubclassResolution(t *testing.T) {
 			t.Fatalf("?s bindings = %v, want %v", gotIRIs, wantIRIs)
 		}
 
-		// 2. `?s rdf:type/rdfs:subClassOf* obo:BFO_0000030` scoped to org="c360", platform="ops".
+		// 2. `?s rdf:type/rdfs:subClassOf* obo:BFO_0000030` (and explicit org/platform pattern scoping on TypeScanPatternsForClass).
+		scopedPats, err := TypeScanPatternsForClass("http://purl.obolibrary.org/obo/BFO_0000030", "c360", "ops")
+		if err != nil {
+			t.Fatalf("TypeScanPatternsForClass(scoped BFO_0000030): %v", err)
+		}
+		if !slices.Equal(scopedPats, []string{"c360.ops.*.intel.platform.*"}) {
+			t.Fatalf("TypeScanPatternsForClass(scoped) = %v, want [c360.ops.*.intel.platform.*]", scopedPats)
+		}
 		resScoped, err := exec.ExecuteQuery(
 			context.Background(),
 			`
@@ -150,23 +157,20 @@ func TestVirtualRDFTypeAndSubclassResolution(t *testing.T) {
 				SELECT ?s WHERE { ?s rdf:type/rdfs:subClassOf* obo:BFO_0000030 }
 				ORDER BY ?s
 			`,
-			withOrgPlatform("c360", "ops"),
 		)
 		if err != nil {
-			t.Fatalf("ExecuteQuery(scoped BFO_0000030): %v", err)
+			t.Fatalf("ExecuteQuery(BFO_0000030): %v", err)
 		}
 		gotScopedPatterns := rec.resetAndTake()
-		wantScopedPatterns := []string{"c360.ops.*.intel.platform.*"}
-		if !slices.Equal(gotScopedPatterns, wantScopedPatterns) {
-			t.Fatalf("scoped ScanPattern calls = %v, want %v", gotScopedPatterns, wantScopedPatterns)
+		if !slices.Equal(gotScopedPatterns, wantPatterns) {
+			t.Fatalf("BFO_0000030 ScanPattern calls = %v, want %v", gotScopedPatterns, wantPatterns)
 		}
-		if resScoped.EntitiesScanned != 2 {
-			t.Fatalf("scoped EntitiesScanned = %d, want 2", resScoped.EntitiesScanned)
+		if resScoped.EntitiesScanned != 3 {
+			t.Fatalf("BFO_0000030 EntitiesScanned = %d, want 3", resScoped.EntitiesScanned)
 		}
 		gotScopedIRIs := solutionStrings(resScoped.Solutions, "s")
-		wantScopedIRIs := []string{alphaIRI, bravoIRI}
-		if !slices.Equal(gotScopedIRIs, wantScopedIRIs) {
-			t.Fatalf("scoped ?s bindings = %v, want %v", gotScopedIRIs, wantScopedIRIs)
+		if !slices.Equal(gotScopedIRIs, wantIRIs) {
+			t.Fatalf("BFO_0000030 ?s bindings = %v, want %v", gotScopedIRIs, wantIRIs)
 		}
 
 		// 3. Zero-length `rdf:type/rdfs:subClassOf*` path on primary ClassIRI `diekm:IntelligencePlatform`.
@@ -198,21 +202,20 @@ func TestVirtualRDFTypeAndSubclassResolution(t *testing.T) {
 				SELECT ?s WHERE { ?s rdf:type/rdfs:subClassOf* obo:BFO_0000001 }
 				ORDER BY ?s
 			`,
-			withOrgPlatform("c360", "ops"),
 		)
 		if err != nil {
 			t.Fatalf("ExecuteQuery(BFO_0000001): %v", err)
 		}
 		gotBothPatterns := rec.resetAndTake()
 		wantBothPatterns := []string{
-			"c360.ops.*.intel.observation.*",
-			"c360.ops.*.intel.platform.*",
+			"*.*.*.intel.observation.*",
+			"*.*.*.intel.platform.*",
 		}
 		if !slices.Equal(gotBothPatterns, wantBothPatterns) {
 			t.Fatalf("shared ancestor ScanPattern calls = %v, want %v", gotBothPatterns, wantBothPatterns)
 		}
-		if !slices.Equal(solutionStrings(resBoth.Solutions, "s"), []string{obs1IRI, alphaIRI, bravoIRI}) {
-			t.Fatalf("shared ancestor ?s = %v, want [%s %s %s]", solutionStrings(resBoth.Solutions, "s"), obs1IRI, alphaIRI, bravoIRI)
+		if !slices.Equal(solutionStrings(resBoth.Solutions, "s"), []string{obs1IRI, alphaIRI, bravoIRI, gammaIRI}) {
+			t.Fatalf("shared ancestor ?s = %v, want [%s %s %s %s]", solutionStrings(resBoth.Solutions, "s"), obs1IRI, alphaIRI, bravoIRI, gammaIRI)
 		}
 	})
 
@@ -325,18 +328,17 @@ func TestVirtualRDFTypeAndSubclassResolution(t *testing.T) {
 				}
 				ORDER BY ?s ?sub
 			`,
-			withOrgPlatform("c360", "ops"),
 		)
 		if err != nil {
 			t.Fatalf("ExecuteQuery(join standalone + ?s a ?sub): %v", err)
 		}
 		gotJoinPats := rec.resetAndTake()
-		if !slices.Equal(gotJoinPats, []string{"c360.ops.*.intel.platform.*"}) {
-			t.Fatalf("join ScanPattern calls = %v, want [c360.ops.*.intel.platform.*]", gotJoinPats)
+		if !slices.Equal(gotJoinPats, []string{"*.*.*.intel.platform.*"}) {
+			t.Fatalf("join ScanPattern calls = %v, want [*.*.*.intel.platform.*]", gotJoinPats)
 		}
-		if len(resJoin.Solutions) != 4 {
-			// alpha x (BFO_0000030, diekm:IntelligencePlatform) + bravo x (BFO_0000030, diekm:IntelligencePlatform) = 4
-			t.Fatalf("len(resJoin.Solutions) = %d, want 4: %+v", len(resJoin.Solutions), resJoin.Solutions)
+		if len(resJoin.Solutions) != 6 {
+			// (alpha, bravo, gamma) x (BFO_0000030, diekm:IntelligencePlatform) = 6
+			t.Fatalf("len(resJoin.Solutions) = %d, want 6: %+v", len(resJoin.Solutions), resJoin.Solutions)
 		}
 	})
 
@@ -435,7 +437,6 @@ func TestVirtualRDFTypeAndSubclassResolution(t *testing.T) {
 				SELECT ?s WHERE { ?s a obo:BFO_0000001 }
 			`,
 			WithAllowTruncation(true),
-			withOrgPlatform("c360", "ops"),
 		)
 		if err != nil {
 			t.Fatalf("bound-class scan with AllowTruncation: %v", err)

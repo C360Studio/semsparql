@@ -77,21 +77,21 @@ func TestConstructUnfoldsReifiedGraphForSHACL(t *testing.T) {
 	}
 
 	// Expected deterministic blank node IDs for alpha's projected predicates.
-	roleISRCanon, err := irimap.CanonicalNTriplesObject(message.Triple{Subject: idAlpha, Predicate: "intel.role.assigned", Object: "ISR"}, baseIRI)
+	_, roleISRCanon, err := irimap.CanonicalNTriplesPredicateAndObject(message.Triple{Subject: idAlpha, Predicate: "intel.role.assigned", Object: "ISR"}, baseIRI)
 	if err != nil {
-		t.Fatalf("CanonicalNTriplesObject(ISR): %v", err)
+		t.Fatalf("CanonicalNTriplesPredicateAndObject(ISR): %v", err)
 	}
-	roleReconCanon, err := irimap.CanonicalNTriplesObject(message.Triple{Subject: idAlpha, Predicate: "intel.role.assigned", Object: "Recon"}, baseIRI)
+	_, roleReconCanon, err := irimap.CanonicalNTriplesPredicateAndObject(message.Triple{Subject: idAlpha, Predicate: "intel.role.assigned", Object: "Recon"}, baseIRI)
 	if err != nil {
-		t.Fatalf("CanonicalNTriplesObject(Recon): %v", err)
+		t.Fatalf("CanonicalNTriplesPredicateAndObject(Recon): %v", err)
 	}
-	alt1Canon, err := irimap.CanonicalNTriplesObject(message.Triple{Subject: idAlpha, Predicate: "intel.measurement.altitude-m", Object: float64(1500.5)}, baseIRI)
+	_, alt1Canon, err := irimap.CanonicalNTriplesPredicateAndObject(message.Triple{Subject: idAlpha, Predicate: "intel.measurement.altitude-m", Object: float64(1500.5)}, baseIRI)
 	if err != nil {
-		t.Fatalf("CanonicalNTriplesObject(1500.5): %v", err)
+		t.Fatalf("CanonicalNTriplesPredicateAndObject(1500.5): %v", err)
 	}
-	alt2Canon, err := irimap.CanonicalNTriplesObject(message.Triple{Subject: idAlpha, Predicate: "intel.measurement.altitude-m", Object: float64(1825.0)}, baseIRI)
+	_, alt2Canon, err := irimap.CanonicalNTriplesPredicateAndObject(message.Triple{Subject: idAlpha, Predicate: "intel.measurement.altitude-m", Object: float64(1825.0)}, baseIRI)
 	if err != nil {
-		t.Fatalf("CanonicalNTriplesObject(1825.0): %v", err)
+		t.Fatalf("CanonicalNTriplesPredicateAndObject(1825.0): %v", err)
 	}
 
 	bRoleISR, _ := irimap.BlankNodeID(idAlpha, "intel.role.assigned", roleISRCanon, 0)

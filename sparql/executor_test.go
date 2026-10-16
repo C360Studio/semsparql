@@ -1219,6 +1219,108 @@ func TestSubgroupAndUnionLexicalFilterScoping(t *testing.T) {
 			t.Fatalf("len(Solutions) = %d, want 1 (only branch 2 matches): %+v", len(res.Solutions), res.Solutions)
 		}
 	})
+
+	t.Run("nested group and UNION branches push down outer bound subject without full entity scan", func(t *testing.T) {
+		vocabulary.RegisterEntityType("intel.platform",
+			vocabulary.WithClassIRI("https://example.org/onto#Platform"),
+		)
+		storeEntities := make([]graph.EntityState, 0, 201)
+		storeEntities = append(storeEntities, graph.EntityState{
+			ID: idAlpha,
+			Triples: []message.Triple{
+				{Subject: idAlpha, Predicate: "c360.intel.callsign", Object: "ALPHA-1"},
+				{Subject: idAlpha, Predicate: "c360.intel.note", Object: "NOTE-1"},
+			},
+		})
+		for i := 0; i < 200; i++ {
+			wid := fmt.Sprintf("c360.ops.uas1.intel.widget.w%03d", i)
+			storeEntities = append(storeEntities, graph.EntityState{
+				ID: wid,
+				Triples: []message.Triple{
+					{Subject: wid, Predicate: "c360.intel.callsign", Object: fmt.Sprintf("W-%03d", i)},
+					{Subject: wid, Predicate: "c360.intel.note", Object: fmt.Sprintf("WN-%03d", i)},
+				},
+			})
+		}
+		mr201 := mustMemoryReader(t, storeEntities...)
+
+		cases := []struct {
+			name        string
+			query       string
+			wantRows    int
+			maxReadEnts int
+		}{
+			{
+				name: "plain BGP",
+				query: `
+					PREFIX ex: <https://example.org/onto#>
+					SELECT ?s ?cs WHERE {
+						?s a ex:Platform .
+						?s ex:callsign ?cs .
+					}
+				`,
+				wantRows:    1,
+				maxReadEnts: 2,
+			},
+			{
+				name: "OPTIONAL",
+				query: `
+					PREFIX ex: <https://example.org/onto#>
+					SELECT ?s ?cs WHERE {
+						?s a ex:Platform .
+						OPTIONAL { ?s ex:callsign ?cs }
+					}
+				`,
+				wantRows:    1,
+				maxReadEnts: 2,
+			},
+			{
+				name: "nested group",
+				query: `
+					PREFIX ex: <https://example.org/onto#>
+					SELECT ?s ?cs WHERE {
+						?s a ex:Platform .
+						{ ?s ex:callsign ?cs }
+					}
+				`,
+				wantRows:    1,
+				maxReadEnts: 2,
+			},
+			{
+				name: "UNION branches",
+				query: `
+					PREFIX ex: <https://example.org/onto#>
+					SELECT ?s ?cs WHERE {
+						?s a ex:Platform .
+						{ ?s ex:callsign ?cs }
+						UNION
+						{ ?s ex:note ?cs }
+					}
+				`,
+				wantRows:    2,
+				maxReadEnts: 3,
+			},
+		}
+
+		for _, tc := range cases {
+			spy := &scanCountingReader{GraphReader: mr201}
+			execBounded := NewExecutor(spy, Config{
+				Mapper:          mapper,
+				MaxScanEntities: 100,
+			})
+			res, err := execBounded.ExecuteQuery(context.Background(), tc.query)
+			if err != nil {
+				t.Fatalf("%s failed under MaxScanEntities=100: %v (read=%d)", tc.name, err, spy.totalEntitiesRead)
+			}
+			if len(res.Solutions) != tc.wantRows {
+				t.Fatalf("%s len(Solutions) = %d, want %d", tc.name, len(res.Solutions), tc.wantRows)
+			}
+			if spy.totalEntitiesRead > tc.maxReadEnts || res.EntitiesScanned > tc.maxReadEnts {
+				t.Fatalf("%s read %d entities (EntitiesScanned=%d), want <= %d",
+					tc.name, spy.totalEntitiesRead, res.EntitiesScanned, tc.maxReadEnts)
+			}
+		}
+	})
 }
 
 func TestCumulativeScanBudgetAndMidEvalTimeoutAndEscapedLiterals(t *testing.T) {
@@ -1373,6 +1475,34 @@ func TestCumulativeScanBudgetAndMidEvalTimeoutAndEscapedLiterals(t *testing.T) {
 		`)
 		if err != nil || !resAsk.AskResult {
 			t.Fatalf("ASK with MaxResults=1: res=%+v err=%v, want true/nil", resAsk, err)
+		}
+
+		// Cross-product join exceeding the intermediate solution ceiling (max(MaxResults*10, 100) = 100)
+		// fails closed with ErrResultLimitExceeded across ASK, SELECT DISTINCT, CONSTRUCT, and DESCRIBE.
+		crossEnts := make([]graph.EntityState, 0, 12)
+		for i := 0; i < 12; i++ {
+			cid := fmt.Sprintf("c360.ops.uas1.intel.platform.c%02d", i)
+			crossEnts = append(crossEnts, graph.EntityState{
+				ID: cid,
+				Triples: []message.Triple{
+					{Subject: cid, Predicate: "c360.intel.callsign", Object: fmt.Sprintf("CS-%02d", i)},
+				},
+			})
+		}
+		mrCross := mustMemoryReader(t, crossEnts...)
+		execCross := NewExecutor(mrCross, Config{
+			Mapper:     mapper,
+			MaxResults: 5,
+		})
+		for _, qStr := range []string{
+			`PREFIX ex: <https://example.org/onto#> ASK WHERE { ?a ex:callsign ?x . ?b ex:callsign ?y }`,
+			`PREFIX ex: <https://example.org/onto#> SELECT DISTINCT ?x WHERE { ?a ex:callsign ?x . ?b ex:callsign ?y }`,
+			`PREFIX ex: <https://example.org/onto#> CONSTRUCT { ?a ex:callsign ?x } WHERE { ?a ex:callsign ?x . ?b ex:callsign ?y }`,
+			`PREFIX ex: <https://example.org/onto#> DESCRIBE ?a WHERE { ?a ex:callsign ?x . ?b ex:callsign ?y }`,
+		} {
+			if _, err := execCross.ExecuteQuery(context.Background(), qStr); !errors.Is(err, ErrResultLimitExceeded) {
+				t.Fatalf("cross-product query %q err = %v, want ErrResultLimitExceeded", qStr, err)
+			}
 		}
 	})
 

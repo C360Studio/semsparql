@@ -60,20 +60,5 @@ check_npm_tool() { # name bin
 check_npm_tool @fission-ai/openspec openspec
 check_npm_tool markdownlint-cli2 markdownlint-cli2
 
-# docker: version and daemon reachability only; no containers are started.
-daemon=false
-if command -v docker >/dev/null; then
-  ok docker "client $(docker --version | sed 's/^Docker version //; s/,.*//')"
-  if docker info >/dev/null 2>&1; then ok docker-daemon "reachable"; daemon=true
-  else warn docker-daemon "not reachable (task test:integration needs it once Docker-backed tests land)"; fi
-else bad docker "not found"; fi
-
-if $daemon; then
-  context=$(docker context show 2>/dev/null || echo unknown)
-  endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || echo unknown)
-  ok docker-context "$context ($endpoint)"
-  if [ -n "${DOCKER_HOST:-}" ]; then warn docker-host "DOCKER_HOST=$DOCKER_HOST overrides the context"; fi
-fi
-
 if [ "$fail" -ne 0 ]; then echo "doctor: FAILED"; exit 1; fi
 echo "doctor: ok"

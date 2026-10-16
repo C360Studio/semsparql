@@ -221,14 +221,6 @@ func CanonicalNTriplesPredicateAndObject(tr message.Triple, baseIRI string) (str
 	return predIRI, canonObj, nil
 }
 
-// CanonicalNTriplesObject extracts the exporter-owned canonical N-Triples
-// object representation for tr under baseIRI by serializing a single probe
-// triple through export.SerializeToString(..., export.NTriples).
-func CanonicalNTriplesObject(tr message.Triple, baseIRI string) (string, error) {
-	_, canonObj, err := CanonicalNTriplesPredicateAndObject(tr, baseIRI)
-	return canonObj, err
-}
-
 // BlankNodeID computes the deterministic intermediate blank-node identifier
 // shared by BFO/CCO reification chain folding and unfolding:
 //
