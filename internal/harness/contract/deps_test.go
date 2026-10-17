@@ -152,8 +152,7 @@ func pinnedDependencyViolations(t *testing.T, root string) []string {
 
 // TestPinnedUpstreamSeamsSmoke verifies that the pinned SemEngine (v0.1.0-alpha.2) and SemVocab
 // (v0.2.1) packages expose the exact seams recorded in the bootstrap inventory without mutating
-// process-global registries, and keeps both modules referenced so `go mod tidy -diff` retains
-// their direct requirements before task 1.1 lands.
+// process-global registries.
 func TestPinnedUpstreamSeamsSmoke(t *testing.T) {
 	bfoSpec, err := packs.BFOCCOCoreSpec()
 	if err != nil {

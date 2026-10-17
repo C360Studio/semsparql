@@ -9,7 +9,7 @@ transports and content negotiation, input and execution budgets, opt-in truncati
 ### Requirement: Supported query subset
 
 The service SHALL accept SELECT, ASK, CONSTRUCT and DESCRIBE with PREFIX/BASE, BGPs, OPTIONAL, UNION,
-FILTER comparison/arithmetic/logical/bound/regex/str/lang/datatype/sameterm, DISTINCT, ORDER BY, LIMIT and OFFSET.
+FILTER comparison/arithmetic/logical/bound/regex/str/lang/datatype, DISTINCT, ORDER BY, LIMIT and OFFSET.
 Paths SHALL be limited to `rdf:type/rdfs:subClassOf*` and `rdfs:subClassOf*`.
 
 #### Scenario: Unsupported syntax

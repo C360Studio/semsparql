@@ -53,8 +53,8 @@ SemSparql never invents its own entity IRI format. [`irimap.Mapper.EntityIDToIRI
 forward conversion directly to `export.SubjectIRI(entityID, baseIRI)` in `semengine/vocabulary/export` (verified at
 `semengine v0.1.0-alpha.2` by `TestIRIMapperMatchesExporter` and `TestPropIRIMapperRoundTrip` in
 [`irimap/mapper_test.go`](../irimap/mapper_test.go)). By default, `server.Config.BaseIRI` and `-base-iri` use
-`vocabulary.SemEngineBase` (`https://semengine.c360.io`); with a custom `-base-iri https://semengine.local`, the
-mapping is:
+`vocabulary.SemEngineBase` (`https://semengine.semanticstream.ing`); with a custom `-base-iri https://semengine.local`,
+the mapping is:
 
 ```text
 c360.ops.uas1.intel.platform.alpha
@@ -117,7 +117,7 @@ if a server returns an entity outside the requested selector (`TestScanPatternRe
 [`sparql.Parse`](../sparql/parser.go) parses read-only SPARQL 1.1 `SELECT`, `ASK`, `CONSTRUCT` (including
 `CONSTRUCT WHERE`), and `DESCRIBE` queries with `BASE`, `PREFIX`, Basic Graph Patterns (BGPs, sets of triple patterns
 that must match together), `OPTIONAL`, `UNION`, `FILTER` (`=`, `!=`, `<`, `<=`, `>`, `>=`, `+`, `-`, `*`, `/`, `&&`,
-`||`, `!`, `BOUND`, `STR`, `LANG`, `DATATYPE`, `SAMETERM`, `REGEX`), `RDF.type` shorthand `a`, property paths
+`||`, `!`, `BOUND`, `STR`, `LANG`, `DATATYPE`, `REGEX`), `RDF.type` shorthand `a`, property paths
 `rdf:type/rdfs:subClassOf*` and standalone `rdfs:subClassOf*`, `DISTINCT`, `ORDER BY`, `LIMIT`, and `OFFSET`.
 
 Out-of-scope SPARQL 1.1 features (SPARQL Update, `SERVICE`, `GRAPH`, `FROM`, `GROUP BY`, `HAVING`, aggregates,
@@ -127,12 +127,11 @@ error wrapping `sparql.ErrUnsupportedFeature` (`sparql_unsupported_feature`) nam
 
 ### Access priority
 
-`planBGPWithScope` in [`sparql/planner.go`](../sparql/planner.go) orders triple patterns and folded chains by
-selectivity (and the executor's dynamic step picker re-evaluates candidate selectivity using variables bound at runtime,
-including universally-bound outer rows pushed down into nested `{ ... }` groups and `UNION` branches via
-`seedBGPWithOuterRows` as a correlated relational semi-join restriction on variables referenced in inner BGPs;
-`evalOptional` clears `outerRows` so an `OPTIONAL` starting from `{}` inside a nested group preserves exact bottom-up
-`LeftJoin` semantics) so that queries avoid full scans whenever a more specific access path exists:
+The query planner ([`sparql/planner.go`](../sparql/planner.go)) and executor ([`sparql/executor.go`](../sparql/executor.go))
+order triple patterns and folded chains by selectivity so that queries read as few entities as possible. As each step
+runs, variables bound by earlier patterns (including variables bound in an outer group before a nested `{ ... }` group or
+`UNION` branch) are used to narrow subsequent lookups, while keeping `FILTER` expressions scoped strictly to variables
+bound inside their own lexical group:
 
 1. **`AccessExactEntity`**: the subject is a bound entity IRI or a previous step (or outer group) already bound the
    subject variable.
@@ -147,8 +146,9 @@ including universally-bound outer rows pushed down into nested `{ ... }` groups 
    `MatchAllPattern` and filters locally until SemEngine exposes a server-side predicate-index query verb). Multiple
    dotted predicates sharing a `StandardIRI` are unioned and deduplicated (`TestLookupByIRIMultiMatchUnion` in
    [`sparql/executor_test.go`](../sparql/executor_test.go)).
-4. **`AccessFullScan`**: unconstrained patterns such as `?s ?p ?o` are rejected at plan time with
-   `sparql.ErrUnconstrainedScan` unless bounded by a selective peer pattern in the same BGP.
+4. **`AccessFullScan`**: unconstrained patterns such as `?s ?p ?o` run last and scan `MatchAllPattern` under
+   `MaxScanEntities` and `MaxResults` (stopping with `sparql.ErrScanBudgetExceeded` or `sparql.ErrResultLimitExceeded`
+   when a budget is exceeded).
 
 ### Virtual `rdf:type` and subclass closure
 
@@ -167,10 +167,10 @@ missing.
 
 In `semvocab` packs such as DIEKM (`semvocab v0.2.1`), a flat dotted predicate like `intel.measurement.altitude-m`
 carries a multi-step `vocabulary.ProjectionSpec` that expands one stored triple into a chain of BFO/CCO blank-node
-triples. `planBGPWithScope` in [`sparql/planner.go`](../sparql/planner.go) detects when a BGP contains every step link,
-`NodeClassIRI` type assertion, and terminal `ValuePredicateIRI` triple of a registered `ProjectionSpec` (with
-intermediate variables not escaping to outer clauses or `FILTER` expressions) and collapses the chain into a single
-planned lookup while still binding every intermediate variable to its deterministic `irimap.BlankNodeID`.
+triples. When a query's BGP includes every step link, `NodeClassIRI` type assertion, and terminal `ValuePredicateIRI`
+triple of a registered `ProjectionSpec` (and none of the intermediate variables are filtered or reused outside the
+chain), the planner in [`sparql/planner.go`](../sparql/planner.go) collapses the entire chain into a single direct
+predicate lookup while still binding every intermediate variable to its deterministic `irimap.BlankNodeID`.
 
 When a query writes a partial chain, omits a `NodeClassIRI` type assertion, filters an intermediate blank node, or uses
 a variable predicate, folding does not apply and the executor evaluates the pattern against the virtual unfolded RDF

@@ -63,7 +63,7 @@ curl --fail -sS -X POST "http://127.0.0.1:8080/export" \
 ### Option B: Export a subgraph via `CONSTRUCT`
 
 Send either `POST /export` with `{"construct": "..."}` or `POST /sparql` (anchored by a selective class or predicate
-pattern, since standalone unconstrained `?s ?p ?o` is rejected):
+pattern so the scan stays within `-max-scan-entities` and `-max-results`):
 
 ```bash
 curl --fail -sS -X POST "http://127.0.0.1:8080/sparql" \
@@ -83,8 +83,8 @@ SPARQL
 
 For an entity `c360.ops.uas1.intel.platform.alpha` with `intel.role.assigned = "ISR"` and
 `intel.measurement.altitude-m = 1500.5` (when `semsparql` is started with `-base-iri https://semengine.local`; the
-default `-base-iri` is `https://semengine.c360.io`), `POST /export` with `{"prefix":"c360.ops.uas1.intel.platform"}`
-writes `data-graph.ttl`:
+default `-base-iri` is `https://semengine.semanticstream.ing`), `POST /export` with
+`{"prefix":"c360.ops.uas1.intel.platform"}` writes `data-graph.ttl`:
 
 ```turtle
 @prefix cco: <https://www.commoncoreontologies.org/> .
