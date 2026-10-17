@@ -155,7 +155,7 @@ including universally-bound outer rows pushed down into nested `{ ... }` groups 
 SemEngine entities encode their domain and type in segments 4 and 5 of the six-part entity ID rather than storing an
 explicit `rdf:type` triple. [`sparql.ResolveTypes`](../sparql/types.go) resolves `domain.type` via
 `vocabulary.LookupTypeIRIs` (merging specific `domain.type` entries with any `"*"` wildcard entries registered in
-`semvocab` packs, verified at `semvocab v0.1.0` by `TestPinnedUpstreamSeamsSmoke` in
+`semvocab` packs, verified at `semvocab v0.2.1` by `TestPinnedUpstreamSeamsSmoke` in
 [`internal/harness/contract/deps_test.go`](../internal/harness/contract/deps_test.go)) and expands transitive
 `Superclasses` via `vocabulary.GetEntityTypeMetadata`. Explicit stored `rdf:type` triples on candidate entities and
 virtual `rdf:type` triples are merged as an RDF set without duplicate solutions. At startup,
@@ -165,7 +165,7 @@ missing.
 
 ### Complete-chain folding vs. virtual unfolded fallback
 
-In `semvocab` packs such as DIEKM (`semvocab v0.1.0`), a flat dotted predicate like `intel.measurement.altitude-m`
+In `semvocab` packs such as DIEKM (`semvocab v0.2.1`), a flat dotted predicate like `intel.measurement.altitude-m`
 carries a multi-step `vocabulary.ProjectionSpec` that expands one stored triple into a chain of BFO/CCO blank-node
 triples. `planBGPWithScope` in [`sparql/planner.go`](../sparql/planner.go) detects when a BGP contains every step link,
 `NodeClassIRI` type assertion, and terminal `ValuePredicateIRI` triple of a registered `ProjectionSpec` (with

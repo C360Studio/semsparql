@@ -21,7 +21,7 @@ When SemSparql executes `CONSTRUCT`, `DESCRIBE`, `GET /entities/{entity_id}.json
 [`sparql.UnfoldEntity`](../sparql/construct.go) and [`server.WriteGraphResult`](../server/negotiate.go) guarantee four
 properties required by SHACL validators (verified by `TestConstructUnfoldsReifiedGraphForSHACL` and
 `TestUnfoldTerminalDatatypePropagation` in [`sparql/construct_test.go`](../sparql/construct_test.go), using
-`semengine v0.1.0-alpha.2` and `semvocab v0.1.0`):
+`semengine v0.1.0-alpha.2` and `semvocab v0.2.1`):
 
 1. **Virtual `rdf:type` materialization**: every entity receives its registered `ClassIRI` and transitive `Superclasses`
    (for example, `diekm:IntelligencePlatform`, `cco:ont00000713`, and `obo:BFO_0000030`) so `sh:targetClass` selectors

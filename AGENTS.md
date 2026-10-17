@@ -16,7 +16,7 @@ that edge. It never writes the graph. It reads through `reader.GraphReader`, map
 `semengine/vocabulary/export`, and resolves vocabulary through SemEngine's `vocabulary` and SemVocab packs.
 
 The plan is issue #1 (bootstrap, Stage 3): layout, design decisions, proving tests and tasks. Task 0.1 (`go.mod`
-pinning `semengine v0.1.0-alpha.2` and `semvocab v0.1.0`, Go verification gates, and `internal/harness/contract`
+pinning `semengine v0.1.0-alpha.2` and `semvocab v0.2.1`, Go verification gates, and `internal/harness/contract`
 structural guards), task 0.2 (`semengine#256` and `semengine#259`, both merged into `v0.1.0-alpha.2`), task 1.1
 (`irimap` forward/inverse entity-IRI mapping, canonical N-Triples object extraction, and deterministic `BlankNodeID`),
 task 1.2 (`reader.GraphReader` and `reader.MemoryReader`), task 2.1 (`sparql` AST and parser for the supported
