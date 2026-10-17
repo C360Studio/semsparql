@@ -129,8 +129,10 @@ error wrapping `sparql.ErrUnsupportedFeature` (`sparql_unsupported_feature`) nam
 
 `planBGPWithScope` in [`sparql/planner.go`](../sparql/planner.go) orders triple patterns and folded chains by
 selectivity (and the executor's dynamic step picker re-evaluates candidate selectivity using variables bound at runtime,
-including outer bindings pushed down into nested `{ ... }` groups and `UNION` branches as semi-join restrictions) so that
-queries avoid full scans whenever a more specific access path exists:
+including universally-bound outer rows pushed down into nested `{ ... }` groups and `UNION` branches via
+`seedBGPWithOuterRows` as a correlated relational semi-join restriction on variables referenced in inner BGPs;
+`evalOptional` clears `outerRows` so an `OPTIONAL` starting from `{}` inside a nested group preserves exact bottom-up
+`LeftJoin` semantics) so that queries avoid full scans whenever a more specific access path exists:
 
 1. **`AccessExactEntity`**: the subject is a bound entity IRI or a previous step (or outer group) already bound the
    subject variable.
@@ -237,8 +239,10 @@ refuses any non-loopback address (`0.0.0.0`, `[::]`, or a LAN IP) with `server.E
 is configured (`TestServerAuthAndBindValidation` in [`server/server_test.go`](../server/server_test.go) and
 `TestRunConfigAndFlagValidation` in [`cmd/semsparql/main_test.go`](../cmd/semsparql/main_test.go)). Before opening its
 HTTP listener, [`cmd/semsparql`](../cmd/semsparql/main.go) registers `packs.RegisterBFOCCOCore` and `diekm.Register`,
-checks `sparql.ValidateSuperclassClosure`, connects to NATS, and runs `NATSRPCReader.VerifyPatternCapability`
-(modeled in `TestProbeServerPatternCapabilitySeam` and proven against live `graph-ingest` in
-`TestRunEndToEndWithLiveNATSAndGraphIngest` and `TestRunRefusesIncompatibleLegacyNATSResponder` in
-[`cmd/semsparql/main_test.go`](../cmd/semsparql/main_test.go)) so an incompatible legacy server is refused before
+checks `sparql.ValidateSuperclassClosure`, connects to NATS (with `WithConnectionLossTimeout` configured by
+`-nats-loss-grace`, default `30s`, and `WithConnectionLostCallback` canceling `runCtx` so the HTTP server drains and
+exits when the NATS connection is lost beyond the grace period, proven by `TestRunExitsOnNATSConnectionLossGraceExpiry`),
+and runs `NATSRPCReader.VerifyPatternCapability` (modeled in `TestProbeServerPatternCapabilitySeam` and proven against
+live `graph-ingest` in `TestRunEndToEndWithLiveNATSAndGraphIngest` and `TestRunRefusesIncompatibleLegacyNATSResponder`
+in [`cmd/semsparql/main_test.go`](../cmd/semsparql/main_test.go)) so an incompatible legacy server is refused before
 traffic is accepted.
