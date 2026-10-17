@@ -219,8 +219,6 @@ func (e *Executor) Execute(ctx context.Context, q *Query, opts ...EvalOption) (*
 	}
 }
 
-type outerBounds map[string][]Term
-
 type execState struct {
 	reader               reader.GraphReader
 	mapper               *irimap.Mapper
@@ -232,7 +230,7 @@ type execState struct {
 	allowTruncation      bool
 	truncated            bool
 	truncationReason     string
-	outerBounds          outerBounds
+	outerRows            []Solution
 	unfoldedBySubj       map[Term][]rdfTriple
 }
 
@@ -529,13 +527,18 @@ func (s *execState) evalGroup(ctx context.Context, g GroupPattern, current []Sol
 		case SubGroupPattern:
 			// SPARQL 1.1 §5.2.2 / §18.2.2.6: evaluate nested group bottom-up in its
 			// own lexical scope so inner FILTERs only see variables bound inside the
-			// nested group, while pushing outer bindings down as an access-path
-			// restriction (semi-join) on variables referenced in inner BGPs.
-			savedBounds := s.outerBounds
-			s.outerBounds = extractOuterBounds(solutions, s.outerBounds)
+			// nested group, while pushing universally-bound outer rows down as a
+			// relational semi-join restriction on variables referenced in inner BGPs.
+			savedRows := s.outerRows
+			savedEnforce := s.enforceSolutionLimit
+			s.enforceSolutionLimit = false
 			var inner []Solution
-			inner, err = s.evalGroup(ctx, p.Group, []Solution{{}}, elDisallowed)
-			s.outerBounds = savedBounds
+			s.outerRows, err = s.extractOuterRows(ctx, solutions, s.outerRows)
+			if err == nil {
+				inner, err = s.evalGroup(ctx, p.Group, []Solution{{}}, elDisallowed)
+			}
+			s.enforceSolutionLimit = savedEnforce
+			s.outerRows = savedRows
 			if err == nil {
 				solutions, err = s.joinSolutions(ctx, solutions, inner)
 			}
@@ -569,13 +572,36 @@ func (s *execState) joinSolutions(ctx context.Context, left, right []Solution) (
 	if len(left) == 0 || len(right) == 0 {
 		return nil, nil
 	}
+	leftVars := allBoundVarsInSolutions(left)
+	rightVars := allBoundVarsInSolutions(right)
+	var sharedVars []string
+	for k := range leftVars {
+		if rightVars[k] {
+			sharedVars = append(sharedVars, k)
+		}
+	}
+	slices.Sort(sharedVars)
+
+	var rightBuckets map[string][]Solution
+	if len(sharedVars) > 0 {
+		rightBuckets = make(map[string][]Solution, len(right))
+		for _, r := range right {
+			bk := solutionBucketKey(r, sharedVars)
+			rightBuckets[bk] = append(rightBuckets[bk], r)
+		}
+	}
+
 	out := make([]Solution, 0, len(left))
 	for _, l := range left {
 		if err := s.checkContext(ctx); err != nil {
 			return nil, err
 		}
+		candidates := right
+		if len(sharedVars) > 0 {
+			candidates = rightBuckets[solutionBucketKey(l, sharedVars)]
+		}
 		var stopped bool
-		for _, r := range right {
+		for _, r := range candidates {
 			merged, ok := mergeCompatibleSolutions(l, r)
 			if !ok {
 				continue
@@ -682,10 +708,16 @@ func (s *execState) evalOptional(ctx context.Context, opt OptionalPattern, curre
 		if err := s.checkContext(ctx); err != nil {
 			return nil, err
 		}
-		savedBounds := s.outerBounds
-		s.outerBounds = nil
+		// Clear outerRows while evaluating the optional group: sol already carries
+		// all bindings from the left-hand side of LeftJoin, and for the unusual
+		// `{ OPTIONAL { P } }` shape (where sol is `{}` inside a nested group),
+		// Join(Outer, LeftJoin({{}}, P)) is not algebraically equivalent to
+		// Join(Outer, LeftJoin({{}}, SemiJoin(P, Outer))) when P matches entities
+		// outside Outer but none in Outer.
+		savedRows := s.outerRows
+		s.outerRows = nil
 		ext, err := s.evalGroup(ctx, opt.Group, []Solution{sol.Clone()}, outerDisallowed)
-		s.outerBounds = savedBounds
+		s.outerRows = savedRows
 		if err != nil {
 			return nil, err
 		}
@@ -722,30 +754,35 @@ func (s *execState) evalUnion(ctx context.Context, u UnionPattern, current []Sol
 		return nil, nil
 	}
 	// SPARQL 1.1 §18.2.2.6: evaluate each UNION branch bottom-up in its own
-	// lexical scope, while pushing outer bindings down as an access-path
-	// restriction (semi-join) on variables referenced in inner BGPs.
-	savedBounds := s.outerBounds
-	s.outerBounds = extractOuterBounds(current, s.outerBounds)
+	// lexical scope, while pushing universally-bound outer rows down as a
+	// relational semi-join restriction on variables referenced in inner BGPs.
+	savedRows := s.outerRows
+	var err error
+	s.outerRows, err = s.extractOuterRows(ctx, current, s.outerRows)
+	if err != nil {
+		s.outerRows = savedRows
+		return nil, err
+	}
 	savedEnforce := s.enforceSolutionLimit
 	s.enforceSolutionLimit = false
 	unioned := make([]Solution, 0)
 	for _, branch := range u.Branches {
 		if err := s.checkContext(ctx); err != nil {
 			s.enforceSolutionLimit = savedEnforce
-			s.outerBounds = savedBounds
+			s.outerRows = savedRows
 			return nil, err
 		}
 		branchSols, err := s.evalGroup(ctx, branch, []Solution{{}}, outerDisallowed)
 		if err != nil {
 			s.enforceSolutionLimit = savedEnforce
-			s.outerBounds = savedBounds
+			s.outerRows = savedRows
 			return nil, err
 		}
 		for _, bsol := range branchSols {
 			stop, err := s.appendSolution(&unioned, bsol)
 			if err != nil {
 				s.enforceSolutionLimit = savedEnforce
-				s.outerBounds = savedBounds
+				s.outerRows = savedRows
 				return nil, err
 			}
 			if stop {
@@ -754,89 +791,96 @@ func (s *execState) evalUnion(ctx context.Context, u UnionPattern, current []Sol
 		}
 	}
 	s.enforceSolutionLimit = savedEnforce
-	s.outerBounds = savedBounds
+	s.outerRows = savedRows
 	return s.joinSolutions(ctx, current, unioned)
 }
 
-func extractOuterBounds(solutions []Solution, inherited outerBounds) outerBounds {
-	if len(solutions) == 0 && len(inherited) == 0 {
-		return nil
-	}
-	out := make(outerBounds, len(inherited))
-	for k, terms := range inherited {
-		out[k] = slices.Clone(terms)
+func (s *execState) extractOuterRows(ctx context.Context, solutions []Solution, inherited []Solution) ([]Solution, error) {
+	if len(solutions) == 0 {
+		return nil, nil
 	}
 	boundVars := allBoundVarsInSolutions(solutions)
+	if len(boundVars) == 0 {
+		return inherited, nil
+	}
+	vars := make([]string, 0, len(boundVars))
 	for k := range boundVars {
-		var terms []Term
-		for _, sol := range solutions {
-			t := sol[k]
-			exists := false
-			for _, prev := range terms {
-				if termsMatch(prev, t) {
-					exists = true
-					break
-				}
-			}
-			if !exists {
-				terms = append(terms, t)
-			}
-		}
-		if prevTerms, hadInherited := out[k]; hadInherited {
-			var intersected []Term
-			for _, t := range terms {
-				for _, pt := range prevTerms {
-					if termsMatch(t, pt) {
-						intersected = append(intersected, t)
-						break
-					}
-				}
-			}
-			out[k] = intersected
-		} else {
-			out[k] = terms
-		}
+		vars = append(vars, k)
 	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
+	slices.Sort(vars)
 
-func allTermsAreIRIs(terms []Term) bool {
-	if len(terms) == 0 {
-		return false
-	}
-	for _, t := range terms {
-		if t.Kind != TermIRI {
-			return false
-		}
-	}
-	return true
-}
-
-func seedSolutionsWithOuterTerms(solutions []Solution, key string, terms []Term) []Solution {
-	if len(solutions) == 0 || len(terms) == 0 {
-		return nil
-	}
-	out := make([]Solution, 0, len(solutions)*len(terms))
+	projected := make([]Solution, 0, len(solutions))
 	for _, sol := range solutions {
-		if existing, ok := sol[key]; ok {
-			for _, t := range terms {
-				if termsMatch(existing, t) {
-					out = append(out, sol)
-					break
-				}
-			}
-			continue
+		row := make(Solution, len(vars))
+		for _, k := range vars {
+			row[k] = sol[k]
 		}
-		for _, t := range terms {
-			ext := sol.Clone()
-			ext[key] = t
-			out = append(out, ext)
+		projected = append(projected, row)
+	}
+	projected = deduplicateSolutions(projected, vars)
+	if len(inherited) == 0 {
+		return projected, nil
+	}
+
+	savedEnforce := s.enforceSolutionLimit
+	s.enforceSolutionLimit = false
+	joined, err := s.joinSolutions(ctx, inherited, projected)
+	s.enforceSolutionLimit = savedEnforce
+	if err != nil || len(joined) == 0 {
+		return nil, err
+	}
+	unionVarsMap := allBoundVarsInSolutions(joined)
+	unionVars := make([]string, 0, len(unionVarsMap))
+	for k := range unionVarsMap {
+		unionVars = append(unionVars, k)
+	}
+	slices.Sort(unionVars)
+	return deduplicateSolutions(joined, unionVars), nil
+}
+
+func (s *execState) seedBGPWithOuterRows(ctx context.Context, current []Solution, bgp BGPPattern) ([]Solution, error) {
+	if len(s.outerRows) == 0 || len(current) == 0 {
+		return current, nil
+	}
+	bgpVars := make(map[string]bool)
+	collectElementBindingKeys(bgp, bgpVars)
+	outerRow0 := s.outerRows[0]
+	boundInCurrent := allBoundVarsInSolutions(current)
+
+	needSeed := false
+	for k := range outerRow0 {
+		if bgpVars[k] && !boundInCurrent[k] {
+			needSeed = true
+			break
 		}
 	}
-	return out
+	if !needSeed {
+		return current, nil
+	}
+
+	projKeys := make([]string, 0, len(outerRow0))
+	for k := range outerRow0 {
+		if bgpVars[k] || boundInCurrent[k] {
+			projKeys = append(projKeys, k)
+		}
+	}
+	slices.Sort(projKeys)
+
+	projected := make([]Solution, 0, len(s.outerRows))
+	for _, row := range s.outerRows {
+		p := make(Solution, len(projKeys))
+		for _, k := range projKeys {
+			p[k] = row[k]
+		}
+		projected = append(projected, p)
+	}
+	projected = deduplicateSolutions(projected, projKeys)
+
+	savedEnforce := s.enforceSolutionLimit
+	s.enforceSolutionLimit = false
+	seeded, err := s.joinSolutions(ctx, current, projected)
+	s.enforceSolutionLimit = savedEnforce
+	return seeded, err
 }
 
 type rdfTriple struct {
@@ -864,27 +908,25 @@ func (s *execState) evalBGP(ctx context.Context, bgp BGPPattern, current []Solut
 			disallowed[k] = true
 		}
 	}
+	for _, row := range s.outerRows {
+		for k := range row {
+			disallowed[k] = true
+		}
+		break
+	}
+
+	solutions, err := s.seedBGPWithOuterRows(ctx, current, bgp)
+	if err != nil || len(solutions) == 0 {
+		return nil, err
+	}
 
 	candidates := buildBGPCandidates(bgp, disallowed)
-	solutions := current
 	for len(candidates) > 0 && len(solutions) > 0 {
 		if err := s.checkContext(ctx); err != nil {
 			return nil, err
 		}
 		boundSubjects := allBoundVarsInSolutions(solutions)
 		boundObjIRIs := allBoundIRIVarsInSolutions(solutions)
-		for k, terms := range s.outerBounds {
-			if boundSubjects == nil {
-				boundSubjects = make(map[string]bool)
-			}
-			boundSubjects[k] = true
-			if allTermsAreIRIs(terms) {
-				if boundObjIRIs == nil {
-					boundObjIRIs = make(map[string]bool)
-				}
-				boundObjIRIs[k] = true
-			}
-		}
 		bestIdx, step := pickNextBGPCandidate(candidates, boundSubjects, boundObjIRIs, s.mapper, "", "")
 		if step.Kind == accessEmpty {
 			return nil, nil
@@ -892,26 +934,9 @@ func (s *execState) evalBGP(ctx context.Context, bgp BGPPattern, current []Solut
 		cand := candidates[bestIdx]
 		candidates = slices.Delete(candidates, bestIdx, bestIdx+1)
 
-		var err error
 		if cand.isChain {
-			if key, ok := bindingKey(cand.chain.Subject); ok && !allSubjectsBound(cand.chain.Subject, solutions) {
-				if terms, hasOuter := s.outerBounds[key]; hasOuter {
-					solutions = seedSolutionsWithOuterTerms(solutions, key, terms)
-				}
-			}
 			solutions, err = s.evalFoldedChain(ctx, cand.chain, solutions)
 		} else {
-			if key, ok := bindingKey(cand.triple.Subject); ok && !allSubjectsBound(cand.triple.Subject, solutions) {
-				if terms, hasOuter := s.outerBounds[key]; hasOuter {
-					solutions = seedSolutionsWithOuterTerms(solutions, key, terms)
-				}
-			} else if (cand.triple.IsPlainRDFType() || cand.triple.IsRDFTypeWithSubClassPath()) && !allObjectsBoundToIRIs(cand.triple.Object, solutions) {
-				if key, ok := bindingKey(cand.triple.Object); ok {
-					if terms, hasOuter := s.outerBounds[key]; hasOuter && allTermsAreIRIs(terms) {
-						solutions = seedSolutionsWithOuterTerms(solutions, key, terms)
-					}
-				}
-			}
 			solutions, err = s.evalTriplePattern(ctx, cand.triple, solutions)
 		}
 		if err != nil {
@@ -2592,20 +2617,83 @@ func termOrderRank(k TermKind) int {
 }
 
 func deduplicateSolutions(solutions []Solution, vars []string) []Solution {
+	if len(solutions) <= 1 {
+		return solutions
+	}
 	out := make([]Solution, 0, len(solutions))
+	buckets := make(map[string][]Solution, len(solutions))
 	for _, sol := range solutions {
+		bk := solutionBucketKey(sol, vars)
+		bucket := buckets[bk]
 		dup := false
-		for _, existing := range out {
+		for _, existing := range bucket {
 			if solutionsEqualOnVars(existing, sol, vars) {
 				dup = true
 				break
 			}
 		}
 		if !dup {
+			buckets[bk] = append(bucket, sol)
 			out = append(out, sol)
 		}
 	}
 	return out
+}
+
+func solutionBucketKey(sol Solution, vars []string) string {
+	if len(vars) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, v := range vars {
+		b.WriteString(v)
+		b.WriteByte('=')
+		t, ok := sol[v]
+		if !ok {
+			b.WriteByte('U')
+		} else {
+			writeTermBucketKey(&b, t)
+		}
+		b.WriteByte(0)
+	}
+	return b.String()
+}
+
+func writeTermBucketKey(b *strings.Builder, t Term) {
+	if t.Kind != TermLiteral {
+		b.WriteByte(byte('0' + t.Kind))
+		b.WriteByte(':')
+		b.WriteString(t.Value)
+		return
+	}
+	if t.Language != "" {
+		b.WriteString("L@")
+		b.WriteString(strings.ToLower(t.Language))
+		b.WriteByte(':')
+		b.WriteString(t.Value)
+		return
+	}
+	dt := normalizeDatatypeIRI(t.Datatype)
+	if isFloatDatatype(dt) {
+		if f, err := strconv.ParseFloat(t.Value, 64); err == nil && !math.IsNaN(f) {
+			if f == 0 {
+				f = 0
+			}
+			b.WriteString("LF:")
+			b.WriteString(strconv.FormatFloat(f, 'g', -1, 64))
+			return
+		}
+	} else if dt == XSDIntegerIRI {
+		if iv, err := strconv.ParseInt(t.Value, 10, 64); err == nil {
+			b.WriteString("LI:")
+			b.WriteString(strconv.FormatInt(iv, 10))
+			return
+		}
+	}
+	b.WriteString("LT:")
+	b.WriteString(dt)
+	b.WriteByte(':')
+	b.WriteString(t.Value)
 }
 
 func solutionsEqualOnVars(a, b Solution, vars []string) bool {

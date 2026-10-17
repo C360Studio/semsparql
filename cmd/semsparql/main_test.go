@@ -30,7 +30,9 @@ import (
 	"github.com/c360studio/semengine/message"
 	"github.com/c360studio/semengine/natsclient"
 	"github.com/c360studio/semengine/payloadregistry"
+	"github.com/c360studio/semengine/pkg/errs"
 	"github.com/c360studio/semengine/pkg/lifecycle"
+	"github.com/c360studio/semengine/pkg/types"
 	graphingest "github.com/c360studio/semengine/processor/graph-ingest"
 	"github.com/c360studio/semengine/vocabulary"
 	"github.com/c360studio/semsparql/reader"
@@ -63,6 +65,7 @@ func TestRunConfigAndFlagValidation(t *testing.T) {
 		{args: []string{"unexpected-positional-arg"}, wantSub: "unexpected positional arguments"},
 		{args: []string{"-nats-url", "   "}, wantSub: "nats-url must not be empty"},
 		{args: []string{"-nats-timeout", "-1s"}, wantSub: "nats-timeout must not be negative"},
+		{args: []string{"-nats-loss-grace", "-1s"}, wantSub: "nats-loss-grace must not be negative"},
 		{args: []string{"-query-timeout", "0s"}, wantSub: "query-timeout must be positive"},
 		{args: []string{"-max-results", "0"}, wantSub: "max-results must be positive"},
 		{args: []string{"-max-scan-entities", "0"}, wantSub: "max-scan-entities must be positive"},
@@ -183,6 +186,117 @@ func TestRunRefusesIncompatibleLegacyNATSResponder(t *testing.T) {
 	}, nil, io.Discard)
 	if !errors.Is(err, reader.ErrPatternCapabilityUnsupported) {
 		t.Fatalf("run against legacy server = %v, want ErrPatternCapabilityUnsupported", err)
+	}
+}
+
+func TestRunExitsOnNATSConnectionLossGraceExpiry(t *testing.T) {
+	restore := vocabulary.SnapshotRegistry()
+	defer restore()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+
+	ns, err := natsserver.NewServer(&natsserver.Options{
+		Host:   "127.0.0.1",
+		Port:   -1,
+		NoLog:  true,
+		NoSigs: true,
+	})
+	if err != nil {
+		t.Fatalf("natsserver.NewServer: %v", err)
+	}
+	ns.Start()
+	t.Cleanup(func() {
+		ns.Shutdown()
+		ns.WaitForShutdown()
+	})
+	if !ns.ReadyForConnections(10 * time.Second) {
+		t.Fatal("embedded NATS server not ready")
+	}
+
+	rawConn, err := nats.Connect(ns.ClientURL())
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	t.Cleanup(func() {
+		rawConn.Close()
+	})
+
+	var prefixSub string
+	for _, v := range graph.QueryVerbs() {
+		if v.Name == "prefix" {
+			prefixSub = v.Subject
+		}
+	}
+	sub, err := rawConn.Subscribe(prefixSub, func(msg *nats.Msg) {
+		var req graph.PrefixQueryRequest
+		_ = json.Unmarshal(msg.Data, &req)
+		if req.Pattern == "invalid" {
+			_ = natsclient.RespondError(msg, errs.ClassifiedCode(
+				errs.ErrorInvalid,
+				types.ErrorCodeEntityIDPatternInvalid,
+				errors.New("invalid pattern"),
+			))
+			return
+		}
+		_ = msg.Respond([]byte(`{"entities":[]}`))
+	})
+	if err != nil {
+		t.Fatalf("Subscribe(%s): %v", prefixSub, err)
+	}
+	t.Cleanup(func() {
+		_ = sub.Unsubscribe()
+	})
+	if err := rawConn.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	pr, pw := io.Pipe()
+	defer func() { _ = pr.Close() }()
+
+	errCh := make(chan error, 1)
+	go func() {
+		defer func() { _ = pw.Close() }()
+		errCh <- run(ctx, []string{
+			"-bind", "127.0.0.1:0",
+			"-nats-url", ns.ClientURL(),
+			"-nats-timeout", "2s",
+			"-nats-loss-grace", "150ms",
+		}, nil, pw)
+	}()
+
+	lineCh := make(chan string, 1)
+	go func() {
+		sc := bufio.NewScanner(pr)
+		if sc.Scan() {
+			lineCh <- sc.Text()
+		}
+	}()
+
+	select {
+	case line := <-lineCh:
+		if !strings.HasPrefix(line, "semsparql listening on ") {
+			t.Fatalf("unexpected startup line %q", line)
+		}
+	case err := <-errCh:
+		t.Fatalf("run exited before listening: %v", err)
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for listener: %v", ctx.Err())
+	}
+
+	// Shut down the broker while run() is serving; the connection-loss timer
+	// must fire after -nats-loss-grace (150ms), canceling runCtx and exiting run().
+	rawConn.Close()
+	ns.Shutdown()
+	ns.WaitForShutdown()
+
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "nats connection lost") {
+			t.Fatalf("run() after broker shutdown returned %v, want error containing 'nats connection lost'", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for run() to exit on NATS connection loss: %v", ctx.Err())
 	}
 }
 

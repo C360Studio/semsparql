@@ -1086,6 +1086,7 @@ type scanCountingReader struct {
 	reader.GraphReader
 	totalEntitiesRead int
 	delayPerCall      time.Duration
+	maxBatchIDs       int
 }
 
 func (r *scanCountingReader) sleepIfConfigured(ctx context.Context) error {
@@ -1116,6 +1117,9 @@ func (r *scanCountingReader) GetEntity(ctx context.Context, id string) (*graph.E
 func (r *scanCountingReader) GetBatch(ctx context.Context, ids []string) (*graph.EntityBatchResponse, error) {
 	if err := r.sleepIfConfigured(ctx); err != nil {
 		return nil, err
+	}
+	if r.maxBatchIDs > 0 && len(ids) > r.maxBatchIDs {
+		return nil, fmt.Errorf("GetBatch requested %d IDs, exceeding maxBatchIDs %d", len(ids), r.maxBatchIDs)
 	}
 	resp, err := r.GraphReader.GetBatch(ctx, ids)
 	if resp != nil {
@@ -1319,6 +1323,89 @@ func TestSubgroupAndUnionLexicalFilterScoping(t *testing.T) {
 				t.Fatalf("%s read %d entities (EntitiesScanned=%d), want <= %d",
 					tc.name, spy.totalEntitiesRead, res.EntitiesScanned, tc.maxReadEnts)
 			}
+		}
+	})
+
+	t.Run("two-variable nested group and UNION preserve outer row correlation without cartesian blowup", func(t *testing.T) {
+		const linkCount = 151
+		linkEntities := make([]graph.EntityState, 0, linkCount*2)
+		for i := 0; i < linkCount; i++ {
+			srcID := fmt.Sprintf("c360.ops.uas1.intel.platform.src%03d", i)
+			dstID := fmt.Sprintf("c360.ops.uas1.intel.target.dst%03d", i)
+			linkEntities = append(linkEntities,
+				graph.EntityState{
+					ID: srcID,
+					Triples: []message.Triple{
+						{Subject: srcID, Predicate: "c360.intel.tracks", Object: dstID},
+						{Subject: srcID, Predicate: "c360.intel.callsign", Object: fmt.Sprintf("CS-%03d", i)},
+					},
+				},
+				graph.EntityState{
+					ID: dstID,
+					Triples: []message.Triple{
+						{Subject: dstID, Predicate: "c360.intel.note", Object: fmt.Sprintf("NOTE-%03d", i)},
+					},
+				},
+			)
+		}
+		mrLinks := mustMemoryReader(t, linkEntities...)
+
+		// 1. With MaxResults=200 (maxIntermediateSolutions=2000), a two-variable nested group
+		// `?a ex:tracks ?b . { ?a ex:callsign ?y . ?b ex:note ?w }` must seed the 151 correlated
+		// (?a, ?b) outer rows rather than materialising 151×151 = 22,801 pairs, returning all 151 rows
+		// and never requesting more than MaxResults IDs in a single GetBatch step.
+		for _, qStr := range []string{
+			`PREFIX ex: <https://example.org/onto#>
+			 SELECT ?a ?b ?y ?w WHERE {
+			   ?a ex:tracks ?b .
+			   { ?a ex:callsign ?y . ?b ex:note ?w }
+			 }`,
+			`PREFIX ex: <https://example.org/onto#>
+			 SELECT ?a ?b ?y ?w WHERE {
+			   ?a ex:tracks ?b .
+			   { ?a ex:callsign ?y . ?b ex:note ?w }
+			   UNION
+			   { ?a ex:callsign ?y . ?b ex:note ?w . FILTER(?y = "NONE") }
+			 }`,
+		} {
+			spy := &scanCountingReader{
+				GraphReader: mrLinks,
+				maxBatchIDs: 200,
+			}
+			execPair := NewExecutor(spy, Config{
+				Mapper:          mapper,
+				MaxResults:      200,
+				MaxScanEntities: 1000,
+			})
+			res, err := execPair.ExecuteQuery(context.Background(), qStr)
+			if err != nil {
+				t.Fatalf("two-variable correlated semi-join failed: %v", err)
+			}
+			if len(res.Solutions) != linkCount {
+				t.Fatalf("len(Solutions) = %d, want %d", len(res.Solutions), linkCount)
+			}
+		}
+
+		// 2. When the outer row count exceeds maxIntermediateSolutions() (151 > max(5*10, 100) = 100),
+		// seeding fails closed with ErrResultLimitExceeded before issuing GetBatch for the inner BGP.
+		spyCap := &scanCountingReader{
+			GraphReader: mrLinks,
+			maxBatchIDs: 1,
+		}
+		execCap := NewExecutor(spyCap, Config{
+			Mapper:          mapper,
+			MaxResults:      5,
+			MaxScanEntities: 1000,
+		})
+		_, err := execCap.ExecuteQuery(context.Background(), `
+			PREFIX ex: <https://example.org/onto#>
+			SELECT DISTINCT ?y WHERE {
+				?a ex:tracks ?b .
+				{ ?a ex:callsign ?y . ?b ex:note ?w }
+			}
+		`)
+		if !errors.Is(err, ErrResultLimitExceeded) {
+			t.Fatalf("err = %v, want ErrResultLimitExceeded", err)
 		}
 	})
 }

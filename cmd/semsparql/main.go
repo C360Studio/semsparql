@@ -26,9 +26,10 @@ import (
 )
 
 const (
-	defaultNATSURL     = "nats://127.0.0.1:4222"
-	defaultNATSTimeout = 10 * time.Second
-	envBearerToken     = "SEMSPARQL_BEARER_TOKEN"
+	defaultNATSURL       = "nats://127.0.0.1:4222"
+	defaultNATSTimeout   = 10 * time.Second
+	defaultNATSLossGrace = 30 * time.Second
+	envBearerToken       = "SEMSPARQL_BEARER_TOKEN"
 )
 
 func main() {
@@ -59,6 +60,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		bindAddr        = fs.String("bind", server.DefaultBindAddress, "HTTP listen address (non-local binds require -bearer-token or mTLS)")
 		natsURL         = fs.String("nats-url", defaultNATSURL, "NATS server URL")
 		natsTimeout     = fs.Duration("nats-timeout", defaultNATSTimeout, "Per-request NATS RPC timeout")
+		natsLossGrace   = fs.Duration("nats-loss-grace", defaultNATSLossGrace, "Grace period after NATS disconnect before failing closed (0 disables)")
 		baseIRI         = fs.String("base-iri", vocabulary.SemEngineBase, "Base IRI for canonical entity IRIs")
 		bearerToken     = fs.String("bearer-token", "", "Bearer token for HTTP authentication (prefer SEMSPARQL_BEARER_TOKEN to avoid process-list exposure)")
 		tlsCertPath     = fs.String("tls-cert", "", "Path to server TLS certificate PEM file")
@@ -83,6 +85,9 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	}
 	if *natsTimeout < 0 {
 		return fmt.Errorf("nats-timeout must not be negative, got %s", *natsTimeout)
+	}
+	if *natsLossGrace < 0 {
+		return fmt.Errorf("nats-loss-grace must not be negative, got %s", *natsLossGrace)
 	}
 	if *queryTimeout <= 0 {
 		return fmt.Errorf("query-timeout must be positive, got %s", *queryTimeout)
@@ -140,6 +145,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		natsclient.WithName("semsparql"),
 		natsclient.WithTimeout(*natsTimeout),
 		natsclient.WithHealthInterval(0),
+		natsclient.WithConnectionLossTimeout(*natsLossGrace),
 		natsclient.WithConnectionLostCallback(func(connErr error) {
 			if connErr == nil {
 				connErr = errors.New("NATS connection permanently lost")
