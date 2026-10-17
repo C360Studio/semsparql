@@ -34,7 +34,7 @@ server-side wildcard pattern support before opening the HTTP listener (`TestRunE
 | `-nats-url` | `nats://127.0.0.1:4222` | NATS server URL. |
 | `-nats-timeout` | `10s` | Per-request NATS RPC timeout. |
 | `-nats-loss-grace` | `30s` | Grace period after NATS disconnect before shutting down the HTTP server (`0` disables). |
-| `-base-iri` | `https://semengine.c360.io` | Base IRI used for canonical entity IRIs (`{base}/entities/{org}/{platform}/{system}/{domain}/{type}/{instance}`). |
+| `-base-iri` | `https://semengine.semanticstream.ing` (`vocabulary.SemEngineBase`) | Base IRI used for canonical entity IRIs (`{base}/entities/{org}/{platform}/{system}/{domain}/{type}/{instance}`). |
 | `-bearer-token` | `""` | Bearer token required on HTTP requests (prefer setting `SEMSPARQL_BEARER_TOKEN` in the environment). |
 | `-tls-cert` | `""` | Path to server TLS certificate PEM file. |
 | `-tls-key` | `""` | Path to server TLS private key PEM file. |
@@ -135,6 +135,7 @@ import (
 
     "github.com/c360studio/semengine/graph"
     "github.com/c360studio/semengine/message"
+    "github.com/c360studio/semengine/vocabulary"
     "github.com/c360studio/semsparql/irimap"
     "github.com/c360studio/semsparql/reader"
     "github.com/c360studio/semsparql/sparql"
@@ -163,7 +164,7 @@ func main() {
     }
 
     exec := sparql.NewExecutor(mr, sparql.Config{
-        Mapper: irimap.NewMapper("https://semengine.c360.io"),
+        Mapper: irimap.NewMapper(vocabulary.SemEngineBase),
     })
 
     res, err := exec.ExecuteQuery(context.Background(), `
@@ -185,15 +186,18 @@ func main() {
   Description for each matched entity IRI, including virtual `rdf:type` triples and unfolded blank-node chains).
 - **Prologue & graph patterns:** `BASE`, `PREFIX`, Basic Graph Patterns (BGPs), `OPTIONAL`, `UNION`, nested `{ ... }`
   group patterns, and `FILTER` (`=`, `!=`, `<`, `<=`, `>`, `>=`, `+`, `-`, `*`, `/`, `&&`, `||`, `!`, `BOUND`, `STR`,
-  `LANG`, `DATATYPE`, `SAMETERM`, `REGEX`).
+  `LANG`, `DATATYPE`, `REGEX`).
 - **Property paths:** `a` (`rdf:type`), `rdf:type/rdfs:subClassOf*`, and standalone `rdfs:subClassOf*` over the
   registered vocabulary class hierarchy.
 - **Solution modifiers:** `DISTINCT`, `ORDER BY` (`ASC`/`DESC`), `LIMIT`, and `OFFSET`.
 - **Rejected out-of-scope features (`400 Bad Request`):** SPARQL Update (`INSERT`, `DELETE`, `LOAD`, `CLEAR`, `DROP`,
   `CREATE`, `COPY`, `MOVE`, `ADD`), `SERVICE`, `GRAPH`, `FROM` / `FROM NAMED`, `GROUP BY`, `HAVING`, aggregates
   (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `SAMPLE`, `GROUP_CONCAT`), subqueries, `VALUES`, `BIND`, `MINUS`, `REDUCED`, and
-  arbitrary property paths. Unconstrained full-graph triple patterns (`SELECT * WHERE { ?s ?p ?o }` with no bound
-  subject, class, or predicate) are also rejected with `400 Bad Request`.
+  arbitrary property paths.
+- **Unconstrained triple patterns (`?s ?p ?o`):** Evaluated as a bounded full scan (`AccessFullScan`) under
+  `-max-scan-entities` and `-max-results`; when either budget is exceeded, the server fails closed with `422
+  Unprocessable Entity` (`scan_budget_exceeded` or `result_limit_exceeded`) unless `X-Semsparql-Allow-Truncation: true`
+  is supplied.
 
 ## Further documentation
 

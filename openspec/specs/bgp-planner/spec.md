@@ -112,10 +112,10 @@ successful partial results.
 #### Scenario: Unconstrained scan
 
 - **WHEN** a BGP contains only unconstrained `?s ?p ?o` patterns with no selective anchor, or a selective scan requires
-  more than the available entity budget
-- **THEN** standalone unconstrained `?s ?p ?o` is rejected at plan time (`ErrUnconstrainedScan`) and budget-exceeding
-  scans stop with `ErrScanBudgetExceeded`; evaluation never silently returns an unflagged prefix of the solution
-  sequence.
+  more than the available entity or result budget
+- **THEN** unconstrained `?s ?p ?o` runs as a bounded full scan (`AccessFullScan`) and budget-exceeding scans stop with
+  `ErrScanBudgetExceeded` or `ErrResultLimitExceeded`; evaluation never silently returns an unflagged prefix of the
+  solution sequence.
 
 #### Scenario: Resource exhaustion
 
