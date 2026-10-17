@@ -50,8 +50,8 @@ reviewer runs on a weaker model tier than the developer.
   effort by default and escalate to `high` only when a change crosses module boundaries, designs a concurrency or
   durable-execution primitive, or fails a review round. Keep `semsparql-reviewer` at `high` effort because it runs once
   per ready diff as the independent audit against the repository's review-only rules. Run `semsparql-technical-writer`
-  at `low` or `medium` effort. The tracked `.claude/agents/` and `.codex/agents/` adapter files pin these defaults.
-  `TestAgentSetupParity` checks them once task 0.1 adds Go; until then the parity smoke below is run by hand.
+  at `low` or `medium` effort. The tracked `.claude/agents/` and `.codex/agents/` adapter files pin these defaults,
+  and `TestAgentSetupParity` (`internal/harness/contract/agentsetup_test.go`) enforces them in `task test:unit`.
 
 On Gemini (Antigravity), role subagents are registered with `define_subagent` pointing at the matching
 `.agents/contracts/semsparql-*.md` contract and invoked with `invoke_subagent`; `Model` defaults to `"inherit"` (for
@@ -127,8 +127,8 @@ reference cannot be required to interpret a shared rule.
 
 ## Read-only parity smoke
 
-Run steps 1–9 by hand after changing a contract, adapter, or repository routing rule. Steps 1–8 move into
-`TestAgentSetupParity` and its sensitivity test once task 0.1 adds Go and `task test:unit`.
+Steps 1–8 are enforced by `TestAgentSetupParity` and `TestAgentSetupParitySensitivity` in `task test:unit`. Run step 9
+by hand after changing a contract, adapter, or repository routing rule.
 
 1. Confirm all four canonical contracts and all eight agent adapters exist, and that `.agents/protocol.md` and
    `.agents/rules-index.md` exist.

@@ -1,9 +1,10 @@
 # Testing in SemSparql
 
 This page is for a developer about to write or review a test here. It covers what the test has to tell apart, which
-level to run it at, how to show it can fail, and what to record in the pull request. No Go code exists yet; the rules
-apply from the first test that task 0.1 and later tasks add. Gates and tasks named below that do not exist yet are
-marked as arriving with task 0.1.
+level to run it at, how to show it can fail, and what to record in the pull request. Tasks 0.1–4.2 added `go.mod`, the
+Go verification gates, `internal/harness/contract` structural guards, all runtime packages (`irimap`, `reader`,
+`sparql`, `server`, `cmd/semsparql`), and the `-tags=integration` live NATS/DIEKM end-to-end test suite
+(`server/diekm_integration_test.go`, `TestIntegrationDIEKMEndToEndSuite` and `TestPropIntegrationDIEKMLiveServerParity`).
 
 ## Start with the wrong behavior
 
@@ -42,10 +43,10 @@ being protected.
 
 | Level | Command | What it can show |
 |---|---|---|
-| Unit | `task test:unit` (task 0.1) | One function or in-process behavior, including the server over `MemoryReader`. Runs with `-race`; no Docker, no network. |
-| Unit, repeated | `task test:repeat` (task 0.1) | A test that depends on run order, on state left by another test, or on timing. Unit tests run several times, shuffled. |
-| Integration | `task test:integration` (task 0.1) | Behavior that depends on a real NATS server and a real graph-ingest answering the query verbs. |
-| Structural guards | `task verify` | Repository-wide rules checked by tests or scripts. None exist yet. |
+| Unit | `task test:unit` | One function or in-process behavior, including `server` over `MemoryReader` and `NATSRPCReader` / `cmd/semsparql` over an in-process `nats-server/v2` + `graph-ingest`. Runs with `-race`. |
+| Unit, repeated | `task test:repeat` | A test that depends on run order, on state left by another test, or on timing. Unit tests run several times, shuffled. |
+| Integration | `task test:integration` | Behavior that runs under `-tags=integration` (`TestIntegrationDIEKMEndToEndSuite` and `TestPropIntegrationDIEKMLiveServerParity` in `server/diekm_integration_test.go`). |
+| Structural guards | `task verify` | Repository-wide rules checked by `internal/harness/contract` tests and scripts (`scripts/lint-test-ports.sh`, `scripts/cleanup-roots-check.sh`). |
 
 ### Unit tests
 
@@ -58,17 +59,20 @@ go test -race -count=1 -run '^TestBlankNodeID' ./irimap/
 
 ### Integration tests
 
-Integration tests live in `*_integration_test.go` files that start with `//go:build integration`, so `go test`
-without the tag does not build them. They need a real NATS server with JetStream and a graph-ingest fixture that
-serves `graph.ingest.query.{entity,batch,prefix}`, so `NATSRPCReader` can be checked against what `MemoryReader`
-returns for the same graph. That fixture arrives with task 4.2 and is not built yet. SemEngine's `natsfixture` lives
-under its `internal/` and cannot be imported, so semsparql will need its own. Until it exists, write no test that
-pretends to cover the NATS path with a fake.
+Integration tests live in `*_integration_test.go` files that start with `//go:build integration`
+(`TestIntegrationDIEKMEndToEndSuite` and `TestPropIntegrationDIEKMLiveServerParity` in
+`server/diekm_integration_test.go`), so `go test` without the tag does not build them. Package-local live-broker tests
+(`TestScanPatternReaderParity` in `reader/nats_test.go` and `TestRunEndToEndWithLiveNATSAndGraphIngest` in
+`cmd/semsparql/main_test.go`) live in ordinary `*_test.go` files so both `task test:unit` and `task test:integration`
+run them. All of these tests start an in-process `nats-server/v2` with JetStream on an ephemeral port (`127.0.0.1:-1`)
+and wire a real `graphingest.CreateGraphIngest` component alongside the released SemVocab BFO/CCO Core and DIEKM packs.
 
 ### Structural guards
 
 A structural guard is a test or script that scans the whole repository for a rule, such as no fixed ports in tests, no
-`time.Sleep` in tests, no `Skip` calls, or no import that writes to the graph. None exist yet. When one is added,
+`time.Sleep` in tests, no `Skip` calls, or no import that writes to the graph. Task 0.1 added `TestAgentSetupParity`,
+`TestPinnedDependencies`, `TestNoSleepsInTests`, `TestNoSkippedTests`, `TestNoHiddenTests`, `scripts/lint-test-ports.sh`,
+and `scripts/cleanup-roots-check.sh`. When one is added,
 it gets a paired sensitivity test: the sensitivity test plants the violation in a temporary tree and requires the guard
 to name the planted file and the rule, so a guard that matches nothing, or fires for the wrong reason, fails.
 
@@ -92,8 +96,8 @@ Keep a copy of every file before you change it (`cp`), and record its SHA-256 ch
 check that the checksum matches:
 
 ```bash
-cp irimap/irimap.go "${TMPDIR:-/tmp}/irimap.go.bak" && shasum -a 256 irimap/irimap.go   # before
-cp "${TMPDIR:-/tmp}/irimap.go.bak" irimap/irimap.go && shasum -a 256 irimap/irimap.go   # after
+cp irimap/mapper.go "${TMPDIR:-/tmp}/mapper.go.bak" && shasum -a 256 irimap/mapper.go   # before
+cp "${TMPDIR:-/tmp}/mapper.go.bak" irimap/mapper.go && shasum -a 256 irimap/mapper.go   # after
 ```
 
 Do not use `git checkout --`, `git restore`, `git stash` or `git reset --hard`; they can discard other work in the
@@ -177,7 +181,8 @@ in issue #1 are:
 - **Folding equivalence:** a query over folded `ProjectionSpec` chains returns the same solutions as the unfolded query
   over a materialized graph (the reference model below).
 - **Reader parity:** `MemoryReader` and `NATSRPCReader` answer the same calls with the same entities on the same
-  graph. This one needs the integration fixture.
+  graph (`TestScanPatternReaderParity` in `reader/nats_test.go` and `TestPropIntegrationDIEKMLiveServerParity` in
+  `server/diekm_integration_test.go`).
 
 For both tools, the generator must be able to reach the boundary the rule is about. Being reachable is not the same as
 being exercised in a given run, so keep explicit examples for any boundary you claim the test covers.
@@ -229,7 +234,7 @@ read the number of checks actually completed from the tool's output. Record:
 Rapid's flags exist only in a package that imports Rapid, so name that package rather than `./...`:
 
 ```bash
-go test ./irimap -run '^TestPropIRIRoundTrip$' -count=1 -race -v -rapid.checks=100 -rapid.seed=1320
+go test ./irimap -run '^TestPropIRIMapperRoundTrip$' -count=1 -race -v -rapid.checks=100 -rapid.seed=1320
 ```
 
 `-rapid.checks` sets how many cases to try (default 100) and `-rapid.seed` fixes the seed; `-rapid.seed=0` asks for a
@@ -287,8 +292,10 @@ Two more rules apply to every shape:
 
 ## Budgets and failure evidence
 
-Nothing is enforced yet. Coverage thresholds, the integration timeout and per-step timing in `task verify` arrive with
-task 0.1 and later tasks; until then, state in the pull request what you ran and how long it took.
+`task verify` (`scripts/verify.sh`) enforces the 80% statement coverage threshold across all five runtime packages
+(`irimap`, `reader`, `sparql`, `server`, and `cmd/semsparql` via `task cover:check`), the 10-minute integration test
+timeout (`task test:integration`), and per-step timing output. State in the pull request what you ran and how long it
+took.
 
 When a test waits on asynchronous or external state and fails, its message should name the condition, the elapsed
 time, the attempts, the last value seen and the last error. A test that uses randomness prints its seed. A test of a

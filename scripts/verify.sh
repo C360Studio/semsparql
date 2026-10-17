@@ -5,10 +5,11 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-# Order is the contract: cheapest first. The Go gates (fmt:check tidy:check build
-# vet lint vuln test:unit test:integration cover:check test:repeat) join here with
-# task 0.1 of issue #1, test:repeat last.
-steps=(spec:check docs:check)
+# Order is the contract: cheapest first. test:integration writes the profile and
+# tree fingerprint that cover:check reads; test:repeat is the most expensive step
+# and runs last.
+steps=(spec:check docs:check fmt:check tidy:check cleanup-roots:check build vet lint vuln test:unit
+  test:integration cover:check test:repeat)
 
 # Tracked-file state before the run. Comparing before/after (not just "is dirty")
 # keeps verify usable on a working tree with edits in progress; on a clean
