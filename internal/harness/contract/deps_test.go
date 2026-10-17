@@ -20,7 +20,7 @@ const (
 	semengineModulePath  = "github.com/c360studio/semengine"
 	wantSemengineVersion = "v0.1.0-alpha.2"
 	semvocabModulePath   = "github.com/c360studio/semvocab"
-	wantSemvocabVersion  = "v0.1.0"
+	wantSemvocabVersion  = "v0.2.1"
 )
 
 // TestPinnedDependencies enforces AGENTS.md §1 ("SemEngine and SemVocab are pinned to released
@@ -151,7 +151,7 @@ func pinnedDependencyViolations(t *testing.T, root string) []string {
 }
 
 // TestPinnedUpstreamSeamsSmoke verifies that the pinned SemEngine (v0.1.0-alpha.2) and SemVocab
-// (v0.1.0) packages expose the exact seams recorded in the bootstrap inventory without mutating
+// (v0.2.1) packages expose the exact seams recorded in the bootstrap inventory without mutating
 // process-global registries, and keeps both modules referenced so `go mod tidy -diff` retains
 // their direct requirements before task 1.1 lands.
 func TestPinnedUpstreamSeamsSmoke(t *testing.T) {
