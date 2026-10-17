@@ -8,5 +8,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
-  # gomod joins with go.mod in task 0.1 (issue #1).
+  # revive and govulncheck are pinned as go.mod tool directives.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
   # No update path for .task-version or .nvmrc: bump them by hand with task doctor.
