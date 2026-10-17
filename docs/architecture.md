@@ -127,12 +127,11 @@ error wrapping `sparql.ErrUnsupportedFeature` (`sparql_unsupported_feature`) nam
 
 ### Access priority
 
-`planBGPWithScope` in [`sparql/planner.go`](../sparql/planner.go) orders triple patterns and folded chains by
-selectivity (and the executor's dynamic step picker re-evaluates candidate selectivity using variables bound at runtime,
-including universally-bound outer rows pushed down into nested `{ ... }` groups and `UNION` branches via
-`seedBGPWithOuterRows` as a correlated relational semi-join restriction on variables referenced in inner BGPs;
-`evalOptional` clears `outerRows` so an `OPTIONAL` starting from `{}` inside a nested group preserves exact bottom-up
-`LeftJoin` semantics) so that queries avoid full scans whenever a more specific access path exists:
+The query planner ([`sparql/planner.go`](../sparql/planner.go)) and executor ([`sparql/executor.go`](../sparql/executor.go))
+order triple patterns and folded chains by selectivity so that queries read as few entities as possible. As each step
+runs, variables bound by earlier patterns (including variables bound in an outer group before a nested `{ ... }` group or
+`UNION` branch) are used to narrow subsequent lookups, while keeping `FILTER` expressions scoped strictly to variables
+bound inside their own lexical group:
 
 1. **`AccessExactEntity`**: the subject is a bound entity IRI or a previous step (or outer group) already bound the
    subject variable.
@@ -167,10 +166,10 @@ missing.
 
 In `semvocab` packs such as DIEKM (`semvocab v0.2.1`), a flat dotted predicate like `intel.measurement.altitude-m`
 carries a multi-step `vocabulary.ProjectionSpec` that expands one stored triple into a chain of BFO/CCO blank-node
-triples. `planBGPWithScope` in [`sparql/planner.go`](../sparql/planner.go) detects when a BGP contains every step link,
-`NodeClassIRI` type assertion, and terminal `ValuePredicateIRI` triple of a registered `ProjectionSpec` (with
-intermediate variables not escaping to outer clauses or `FILTER` expressions) and collapses the chain into a single
-planned lookup while still binding every intermediate variable to its deterministic `irimap.BlankNodeID`.
+triples. When a query's BGP includes every step link, `NodeClassIRI` type assertion, and terminal `ValuePredicateIRI`
+triple of a registered `ProjectionSpec` (and none of the intermediate variables are filtered or reused outside the
+chain), the planner in [`sparql/planner.go`](../sparql/planner.go) collapses the entire chain into a single direct
+predicate lookup while still binding every intermediate variable to its deterministic `irimap.BlankNodeID`.
 
 When a query writes a partial chain, omits a `NodeClassIRI` type assertion, filters an intermediate blank node, or uses
 a variable predicate, folding does not apply and the executor evaluates the pattern against the virtual unfolded RDF
