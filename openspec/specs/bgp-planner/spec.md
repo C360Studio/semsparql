@@ -51,12 +51,10 @@ an IRI has no matches.
 
 ### Requirement: Virtual types and ancestry
 
-Type evaluation SHALL combine explicit stored `rdf:type` triples on candidate entities and virtual types derived from
-entity IDs as graph sets, keep bound registered-class `?s a <C>` and `?s rdf:type/rdfs:subClassOf* <C>` scans selective
-(`org.platform.*.domain.type.*` plus registered projection node-class predicates via `EntitiesByPredicate`) without
-falling back to an unconstrained full-graph scan for domain entity classes, push outer bindings into nested groups and
-`UNION` branches as access-path restrictions while preserving lexical `FILTER` scope, support registered superclass
-entailment, and require complete registered ancestor closure at startup.
+Type evaluation SHALL combine explicit stored `rdf:type` triples and entity-ID virtual types as graph sets, keep bound
+registered-class `?s a <C>` and `?s rdf:type/rdfs:subClassOf* <C>` scans selective without unconstrained full-graph
+fallback, push outer bindings into nested groups and `UNION` branches as access-path restrictions while preserving
+lexical `FILTER` scope, support registered superclass entailment, and require complete ancestor closure at startup.
 
 #### Scenario: Bound class scan
 
