@@ -1,6 +1,6 @@
 module github.com/c360studio/semsparql
 
-go 1.26.9
+go 1.26.10
 
 tool (
 	github.com/mgechev/revive
