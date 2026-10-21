@@ -24,7 +24,7 @@ core engine simple and making `SemVocab` and `SemSparql` **optional layers at th
    gate requires standard vocabularies—such as Basic Formal Ontology 2.0 (BFO 2.0), Common Core Ontologies (CCO), or the
    Defense Intelligence Enterprise Knowledge Model (DIEKM)—you attach `SemVocab` and `SemSparql` at the edge without
    changing how SemEngine stores data.
-4. **Zero risk to live operations:** `SemSparql` never writes to SemEngine (`TestScanPatternReaderParity` in
+4. **Read-only access with per-request limits:** `SemSparql` never writes to SemEngine (`TestScanPatternReaderParity` in
    [`reader/nats_test.go`](reader/nats_test.go)) and enforces hard per-request scan, result, and timeout budgets
    (`TestQueryLimits` in [`server/server_test.go`](server/server_test.go)). External queries and compliance exports
    cannot mutate live state or run unbounded scans.
