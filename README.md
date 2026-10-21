@@ -4,10 +4,10 @@ SemSparql (`github.com/c360studio/semsparql`) is an **optional, read-only** HTTP
 [W3C SPARQL 1.1 Protocol](https://www.w3.org/TR/sparql11-protocol/) endpoint and RDF / JSON-LD export routes at the
 edge of a live SemEngine graph.
 
-## What's in it for you (the problem we solve)
+## The problem we solve
 
-Semantic-web standards let independent systems and auditors agree on what data means, query it with a common language
-(SPARQL), and check it against strict validation rules (SHACL).
+Semantic-web standards let independent systems and auditors agree on what data means (RDF/Ontologies), query it with a
+common language (SPARQL), and check it against strict validation rules (SHACL).
 
 In practice, putting semantic-web formats inside a core operational database forces every application and every engineer
 to read and write multi-step ontology graphs just to store everyday state. SemEngine avoids that trap by keeping the
