@@ -6,8 +6,8 @@ edge of a live SemEngine graph.
 
 ## The problem we solve
 
-Semantic-web standards let independent systems and auditors agree on what data means (RDF/Ontologies), query it with a common language
-(SPARQL), and check it against strict validation rules (SHACL).
+Semantic-web standards let independent systems and auditors agree on what data means (RDF/Ontologies), query it with a
+common language (SPARQL), and check it against strict validation rules (SHACL).
 
 In practice, putting semantic-web formats inside a core operational database forces every application and every engineer
 to read and write multi-step ontology graphs just to store everyday state. SemEngine avoids that trap by keeping the
