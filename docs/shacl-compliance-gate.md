@@ -7,7 +7,8 @@ export a complete, unfolded RDF graph in Turtle, N-Triples, or JSON-LD so an ext
 
 This page shows how to export unfolded DIEKM (Defense Intelligence Enterprise Knowledge Model), Basic Formal Ontology
 2.0 (BFO 2.0), and Common Core Ontologies (CCO) graphs from SemSparql (`cmd/semsparql` or `server.Server` over
-`POST /export` and `POST /sparql`) and validate them with an external SHACL tool.
+`POST /export` and `POST /sparql`) and validate them with an external SHACL tool. For all CLI flags and HTTP endpoint
+options, see the [Usage and Technical Reference](usage.md).
 
 ## Why unfolding is required before SHACL validation
 

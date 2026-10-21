@@ -10,7 +10,9 @@ never writes to the graph.
 As of Task 4.2, all five runtime packages, the standalone binary (`irimap`, `reader.GraphReader`,
 `reader.MemoryReader`, `reader.NATSRPCReader`, `sparql`, `server`, and `cmd/semsparql`), and the `-tags=integration`
 live NATS/DIEKM end-to-end test suite ([`server/diekm_integration_test.go`](../server/diekm_integration_test.go)) are
-present in the tree.
+present in the tree. For a plain-English overview of how SemEngine, SemVocab, and SemSparql fit together, see the root
+[README](../README.md); for CLI flags, HTTP routes, and Go library examples, see the
+[Usage and Technical Reference](usage.md).
 
 ## Package boundaries and data flow
 
