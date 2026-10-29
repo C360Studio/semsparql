@@ -12,7 +12,7 @@ require (
 	github.com/c360studio/semengine v0.1.0-alpha.2
 	github.com/c360studio/semvocab v0.2.1
 	github.com/nats-io/nats-server/v2 v2.15.1
-	github.com/nats-io/nats.go v1.54.0
+	github.com/nats-io/nats.go v1.55.0
 	golang.org/x/mod v0.42.0
 	gopkg.in/yaml.v3 v3.0.1
 	pgregory.net/rapid v1.3.0
